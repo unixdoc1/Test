@@ -1,0 +1,2308 @@
+how to export mongo db schema 
+There are several ways to export a MongoDB schema (structure). Since MongoDB is schemaless, there's no direct "schema export" command, but you can infer the schema from existing data. Here are the most common approaches:
+1. Using MongoDB Atlas (Cloud)
+•	In Atlas UI, go to your cluster → Collections
+•	Select a collection → click "Schema" tab
+•	Export schema as JSON
+2. Using MongoDB Compass (GUI Tool)
+•	Connect to your database
+•	Select a collection
+•	Go to "Schema" tab
+•	Click "Export Schema" button
+•	Choose JSON or other formats
+3. Using mongodump (Export Entire Database)
+bash
+mongodump --uri="mongodb://localhost:27017/dbname" --out=/path/to/export
+This exports all data + structure in BSON format.
+4. Using mongoexport (Export as JSON/CSV)
+bash
+# Export as JSON
+mongoexport --uri="mongodb://localhost:27017/dbname" \
+  --collection=collectionname \
+  --out=output.json
+
+# Export as CSV with field names
+mongoexport --uri="mongodb://localhost:27017/dbname" \
+  --collection=collectionname \
+  --type=csv \
+  --fields=field1,field2,field3 \
+  --out=output.csv
+5. Infer Schema from Documents (Programmatic)
+javascript
+// MongoDB Shell script to analyze schema
+function analyzeSchema(collectionName, sampleSize = 1000) {
+  const types = {};
+  const sample = db[collectionName].aggregate([
+    { $sample: { size: sampleSize } }
+  ]);
+  
+  sample.forEach(doc => {
+    for (const key in doc) {
+      const type = Array.isArray(doc[key]) ? 'array' : typeof doc[key];
+      types[key] = types[key] || new Set();
+      types[key].add(type);
+    }
+  });
+  
+  // Convert to readable format
+  const schema = {};
+  for (const key in types) {
+    schema[key] = Array.from(types[key]);
+  }
+  
+  return schema;
+}
+
+// Usage
+printjson(analyzeSchema('yourCollection'));
+6. Using Python to Export Schema
+python
+from pymongo import MongoClient
+import json
+
+client = MongoClient('mongodb://localhost:27017')
+db = client['your_database']
+collection = db['your_collection']
+
+# Analyze schema from documents
+def get_schema(collection, sample_size=1000):
+    schema = {}
+    pipeline = [{"$sample": {"size": sample_size}}]
+    
+    for doc in collection.aggregate(pipeline):
+        for key, value in doc.items():
+            if key not in schema:
+                schema[key] = set()
+            schema[key].add(type(value).__name__)
+    
+    # Convert sets to lists for JSON serialization
+    return {k: list(v) for k, v in schema.items()}
+
+# Export schema
+schema = get_schema(collection)
+with open('schema.json', 'w') as f:
+    json.dump(schema, f, indent=2)
+7. Using Node.js
+javascript
+const mongoose = require('mongoose');
+const fs = require('fs');
+
+// If using Mongoose, export your models
+const schema = new mongoose.Schema({
+  name: String,
+  age: Number,
+  email: String
+});
+
+// Export as JSON
+fs.writeFileSync('schema.json', JSON.stringify(schema.obj, null, 2));
+8. Third-Party Tools
+•	MongoDB Schema Analyzer: CLI tool for schema analysis
+•	Variety: Schema analysis library (npm install variety)
+bash
+mongo test --eval "var collection = 'users'" variety.js
+Tips for Schema Analysis:
+1.	Sample Size: Use enough documents to get accurate schema
+2.	Handle Arrays: Check array element types
+3.	Nested Documents: Recursively analyze nested structures
+4.	Field Presence: Track which fields are optional/required
+Quick One-Liner for Basic Schema:
+bash
+# Get all unique keys from collection
+mongo dbname --eval "printjson(Object.keys(db.collectionname.findOne()))"
+Would you like help with any specific approach or have a particular use case in mind?
+how to analyse if schema is problematic and low performing 
+Read 10 web pages
+To analyze if your MongoDB schema is problematic or low-performing, you need to examine specific patterns in your data structure, query execution, and database metrics. Here is a systematic approach:
+🔍 Step 1: Analyze Your Document Structure
+Examine your collections for these common schema design issues that hurt performance:
+•	Unbounded Arrays: Arrays that can grow without limit (like user activity logs) force MongoDB to rewrite the entire document with each update, creating high I/O costs.
+•	Excessive Embedding/Nesting: Deeply nested documents (up to 128 levels are allowed) or documents bloating close to the 16MB limit are inefficient for MongoDB to read and transmit. As a rule, if related data is frequently accessed independently or causes the main document to grow large, it should be stored in a separate collection.
+•	Inappropriate Data Types: Using text for numeric data that will be filtered or sorted on can prevent efficient index usage.
+•	Lack of Document Lifecycle: Collections that grow forever (e.g., log data without a cleanup policy) will eventually degrade performance.
+📊 Step 2: Diagnose Query Performance
+Slow queries are often the most direct symptom of schema or indexing problems. Use the explain("executionStats") command on your queries and look for these red flags in the output:
+•	High totalDocsExamined vs. nReturned: This indicates a collection scan (COLLSCAN). If MongoDB is examining thousands of documents to return a handful, your query is not using an index effectively.
+•	Stage: COLLSCAN: This is a clear sign the query is reading every document in the collection, which is unsustainable at scale.
+•	Stage: SORT in Memory: If the explain plan shows an in-memory sort ("scanAndOrder": true), it means the sort operation cannot use an index, which is very resource-intensive.
+•	High executionTimeMillis: This is the total execution time. Use it to identify your slowest queries for further analysis.
+🛠️ Step 3: Check Database Metrics and Locks
+Use the db.serverStatus() command and database logs to check for systemic issues:
+•	Locking Contention: High values in globalLock.currentQueue.total or locks.<type>.timeAcquiringMicros indicate many operations are waiting for locks, often due to long-running queries from poor schema or missing indexes. A high schemaLock time, even without schema changes, can point to metadata contention.
+•	Memory Pressure: A high rate of page faults indicates your working set (the active data in use) is larger than your available RAM, forcing reads from disk.
+•	WiredTiger Ticket Exhaustion: Tickets control concurrency. If read/write ticket numbers are consistently below 128, your database is struggling to keep up with the concurrent workload.
+💡 Step 4: Leverage MongoDB's Tools
+•	Atlas Performance Advisor: If you use MongoDB Atlas, this tool automatically analyzes slow queries and provides index and schema suggestions, such as flagging excessive $lookup operations or bloated documents.
+•	Database Profiler: Enable profiling (db.setProfilingLevel(1, <slow_ms_threshold>)) to log all slow operations to the system.profile collection for detailed analysis.
+•	mongotop & mongostat: Use these command-line tools to see real-time activity and identify collections with high read/write times or queued operations.
+📈 Performance Improvement Example
+A real-world case study showed how schema and query analysis led to a 60x performance improvement. The key changes were:
+•	Removed an unnecessary $unwind stage in an aggregation pipeline.
+•	Optimized a $lookup stage to work directly with an array field.
+•	Result: A pipeline that took 29 seconds was reduced to under 0.5 seconds.
+🚀 What to Do Next
+Start by identifying your 2-3 slowest or most frequent queries using the database profiler or logs. Run explain("executionStats") on them and check for COLLSCAN stages or high document scan ratios. Simultaneously, use db.serverStatus() to check for high lock queues or low WiredTiger tickets.
+Based on your findings, the solution is often one of these:
+•	Create a targeted index to eliminate collection scans.
+•	Refactor the schema, such as by splitting a bloated document or bounding an array.
+•	Optimize the query shape to be more selective and use projections.
+Would you like a deeper explanation of how to use the explain() command or interpret db.serverStatus() output for your specific case?
+yes
+I'll explain how to use MongoDB's explain() and db.serverStatus() commands for performance analysis, complete with concrete examples.
+🔍 How to Use explain("executionStats")
+Run this on any query to see how MongoDB executes it.
+Basic Syntax:
+javascript
+// For a find query
+db.users.find({ age: { $gt: 25 }, city: "London" }).explain("executionStats");
+
+// For an aggregation pipeline
+db.orders.aggregate([
+  { $match: { status: "shipped" } },
+  { $group: { _id: "$productId", total: { $sum: "$amount" } } }
+]).explain("executionStats");
+Key Metrics to Look For in the Output:
+Metric	What It Means	Good/Bad Threshold
+executionStats.executionTimeMillis	Total query time	>100ms = investigate
+executionStats.totalDocsExamined	Documents scanned	Should be close to nReturned
+executionStats.nReturned	Documents returned	-
+executionStats.executionStages.stage	Operation type	COLLSCAN = warning
+executionStats.executionStages.inputStage.stage	Preceding operation	IXSCAN = good
+Example of a BAD Query:
+javascript
+// If this query scans 10,000 documents to return 10...
+> db.users.find({ email: "user@example.com" }).explain("executionStats")
+{
+  "executionStats": {
+    "executionTimeMillis": 120,
+    "totalDocsExamined": 10000, // BAD: scanned entire collection!
+    "nReturned": 10,
+    "executionStages": {
+      "stage": "COLLSCAN", // BAD: collection scan
+      "filter": { ... }
+    }
+  }
+}
+Solution: Create an index: db.users.createIndex({ email: 1 })
+Example of a GOOD Query:
+javascript
+> db.users.find({ email: "user@example.com" }).explain("executionStats")
+{
+  "executionStats": {
+    "executionTimeMillis": 2,
+    "totalDocsExamined": 1, // GOOD: only scanned what it needed
+    "nReturned": 1,
+    "executionStages": {
+      "stage": "FETCH",
+      "inputStage": {
+        "stage": "IXSCAN", // GOOD: using an index
+        "indexName": "email_1"
+      }
+    }
+  }
+}
+📊 How to Interpret db.serverStatus()
+This command shows overall database health.
+Key Metrics and Their Meaning:
+Metric Path	What It Indicates	Warning Signs
+globalLock.currentQueue.total	Operations waiting	>10 consistently
+locks.Database.acquireWaitCount	Lock contention	Steady increase
+wiredTiger.cache.bytes currently in cache	Working set in RAM	Less than total data size
+wiredTiger.concurrentTransactions.read.available	Read tickets left	Consistently <50
+wiredTiger.concurrentTransactions.write.available	Write tickets left	Consistently <20
+metrics.operation.fastmod	In-place updates	Low = many document moves
+metrics.document.deleted	Tombstones	High = fragmentation
+Critical Checks:
+javascript
+// Run this in mongosh
+const status = db.serverStatus();
+
+// 1. Check lock contention
+print("Current queue length: " + status.globalLock.currentQueue.total);
+if (status.globalLock.currentQueue.total > 10) {
+  print("WARNING: High lock contention - queries are backing up");
+}
+
+// 2. Check memory usage
+const cacheSize = status.wiredTiger.cache["bytes currently in the cache"];
+const cacheMax = status.wiredTiger.cache["maximum bytes configured"];
+const cacheRatio = (cacheSize / cacheMax * 100).toFixed(1);
+print(`Cache usage: ${cacheRatio}% (${cacheSize} / ${cacheMax} bytes)`);
+
+// 3. Check ticket exhaustion
+const readTickets = status.wiredTiger.concurrentTransactions.read.available;
+const writeTickets = status.wiredTiger.concurrentTransactions.write.available;
+print(`Available tickets - Read: ${readTickets}/128, Write: ${writeTickets}/128`);
+if (readTickets < 50 || writeTickets < 20) {
+  print("WARNING: Ticket exhaustion - concurrency limited");
+}
+🛠️ Diagnostic Workflow Example
+Here's a step-by-step process to analyze a slow query:
+javascript
+// 1. Find slow queries from logs
+db.getProfilingStatus() // Check if profiling is enabled
+db.system.profile.find().sort({ ts: -1 }).limit(5) // Show recent slow ops
+
+// 2. Analyze a specific slow query
+const explainResult = db.orders.find({
+  userId: "12345",
+  createdAt: { $gt: new Date("2024-01-01") }
+}).sort({ total: -1 }).explain("executionStats");
+
+// 3. Look for red flags
+if (explainResult.executionStats.totalDocsExamined > 1000) {
+  print("TOO MANY DOCS SCANNED: " + explainResult.executionStats.totalDocsExamined);
+}
+
+if (explainResult.executionStats.executionStages.stage === "COLLSCAN") {
+  print("COLLECTION SCAN DETECTED - needs index!");
+  
+  // 4. Check for existing indexes
+  printjson(db.orders.getIndexes());
+  
+  // 5. Create a targeted index
+  // db.orders.createIndex({ userId: 1, createdAt: -1, total: -1 })
+}
+
+// 6. Check overall DB health
+const status = db.serverStatus();
+if (status.metrics.queryExecutor.scanned > 1000000) {
+  print("High total documents scanned - check all queries");
+}
+📝 Quick Reference: Common Issues & Fixes
+Problem	Symptoms in explain()	Symptoms in serverStatus()	Solution
+Missing Index	COLLSCAN, high totalDocsExamined	High read lock wait time	Create targeted index
+Memory Pressure	High execution time	Low cache hit ratio, page faults	Increase RAM, add index, shrink docs
+Lock Contention	Queued operations	High currentQueue, ticket exhaustion	Optimize queries, split collections
+Document Bloat	Large docsExamined even with index	High cache usage, slow writes	Normalize schema, archive old data
+🎯 Practical Next Steps
+1.	Run a health check: Execute these commands in your environment:
+javascript
+// Quick health check
+print("=== SLOW QUERIES ===");
+db.system.profile.find({ millis: { $gt: 100 } }).limit(3).forEach(printjson);
+
+print("\n=== DATABASE STATUS ===");
+const s = db.serverStatus();
+print(`Queue: ${s.globalLock.currentQueue.total}, Cache: ${(s.wiredTiger.cache['bytes currently in the cache']/1024/1024).toFixed(1)}MB`);
+2.	Identify your top 3 slowest queries and run explain() on them.
+3.	Check if your working set fits in RAM:
+javascript
+const dataSize = db.stats(1024*1024).dataSize; // MB
+const cacheSize = db.serverStatus().wiredTiger.cache['maximum bytes configured']/(1024*1024);
+print(`Data: ${dataSize}MB, Cache: ${cacheSize}MB`);
+if (dataSize > cacheSize * 0.7) print("Consider: Increase cache or add RAM");
+Would you like help analyzing a specific query or serverStatus() output from your database? If you share an anonymized example, I can walk you through interpreting it.
+serverstatus explain 
+Here's a breakdown of db.serverStatus() with practical examples to identify performance issues in MongoDB. I'll explain it visually with a table of key metrics, followed by how to interpret them.
+javascript
+// Get the status object
+const status = db.serverStatus();
+🔍 Key Performance Metrics & Interpretation
+Category	Metric Path	What Good Looks Like	What's Problematic
+🗄️ Connections	connections.current	Stable, below 80% of connections.available.	Consistently near the limit (high churn in connections.totalCreated).
+⚡ Memory & Cache	wiredTiger.cache.bytes currently in the cache / maximum bytes configured	Ratio > 0.8 (80%+ of working set fits in RAM).	Ratio < 0.5 (high page faults, frequent disk reads).
+🔒 Locks & Queues	globalLock.currentQueue.total	0 or low single digits.	Consistently > 5-10; operations are waiting.
+🎫 Concurrency Tickets	wiredTiger.concurrentTransactions.read.available	Close to 128 (default max).	Consistently below 50 (read workload bottleneck).
+	wiredTiger.concurrentTransactions.write.available	Close to 128 (default max).	Consistently below 20 (write workload bottleneck).
+📊 Operation Metrics	opcounters.command	Steady, predictable rate.	Sudden spikes often indicate inefficient queries.
+🔄 Background Flush	backgroundFlushing.average_ms	< 100ms for spinning disks, < 50ms for SSDs.	Consistently high, indicates I/O pressure.
+🚨 Practical Diagnostic Script
+Run this script in your mongosh to get a quick health report:
+javascript
+const s = db.serverStatus();
+
+print("=== DATABASE HEALTH CHECK ===\n");
+
+// 1. Check Connection Pressure
+const connUsed = s.connections.current;
+const connAvailable = s.connections.available;
+const connPercent = ((connUsed / (connUsed + connAvailable)) * 100).toFixed(1);
+print(`📞 CONNECTIONS: ${connUsed} of ${connUsed + connAvailable} in use (${connPercent}%)`);
+if (connPercent > 80) print("   ⚠️  Warning: Connection usage is high.\n");
+
+// 2. Check Cache Efficiency (Working Set in RAM)
+const cacheBytes = s.wiredTiger.cache["bytes currently in the cache"];
+const cacheMaxBytes = s.wiredTiger.cache["maximum bytes configured"];
+const cacheRatio = ((cacheBytes / cacheMaxBytes) * 100).toFixed(1);
+print(`💾 CACHE: Using ${(cacheBytes/1024/1024).toFixed(1)} MB of ${(cacheMaxBytes/1024/1024).toFixed(1)} MB configured (${cacheRatio}%)`);
+if (cacheRatio < 50) print("   ⚠️  Warning: Cache ratio is low. Working set may not fit in RAM.\n");
+
+// 3. Check for Queues (Lock Contention)
+const totalQueue = s.globalLock.currentQueue.total;
+print(`📊 QUEUED OPERATIONS: ${totalQueue}`);
+if (totalQueue > 5) print("   ⚠️  Warning: Operations are queuing, indicating lock/performance contention.\n");
+
+// 4. Check Concurrency Tickets
+const readTickets = s.wiredTiger.concurrentTransactions.read.available;
+const writeTickets = s.wiredTiger.concurrentTransactions.write.available;
+print(`🎫 AVAILABLE TICKETS - Read: ${readTickets}/128, Write: ${writeTickets}/128`);
+if (readTickets < 50) print("   ⚠️  Warning: Read tickets are low. Read workload may be throttled.");
+if (writeTickets < 20) print("   ⚠️  Warning: Write tickets are low. Write workload may be throttled.");
+
+// 5. Check Background Flush Time (I/O Health)
+if (s.backgroundFlushing) {
+    const avgFlush = s.backgroundFlushing.average_ms;
+    print(`\n💽 AVERAGE FLUSH TIME: ${avgFlush} ms`);
+    if (avgFlush > 100) print("   ⚠️  Warning: High flush time indicates disk I/O pressure.");
+}
+🧠 How to Interpret Common Scenarios
+Based on the output, here's how to connect the dots:
+•	Scenario 1: Slow Reads
+o	Symptoms: Low read.available tickets, high opcounters.query.
+o	Likely Cause: Too many concurrent queries, many missing indexes (check with explain()).
+o	Action: Identify frequent queries with db.currentOp() and add indexes.
+•	Scenario 2: Slow Writes
+o	Symptoms: Low write.available tickets, high globalLock.currentQueue.write.
+o	Likely Cause: Heavy insert/update load, inefficient schema (e.g., large document moves).
+o	Action: Check for unbounded array growth or large documents causing rewrites.
+•	Scenario 3: General Sluggishness
+o	Symptoms: Low cache ratio (< 60%), high backgroundFlushing.average_ms.
+o	Likely Cause: The working set is too large for RAM, causing excessive disk I/O.
+o	Action: Scale up RAM, or scale out by sharding the database.
+📈 Advanced: Correlating with explain()
+The real power comes from combining serverStatus() metrics with specific query analysis (explain()).
+For example, if serverStatus() shows low read tickets and a high queue, find the culprit query:
+1.	Check current operations: db.currentOp({ "secs_running": { "$gt": 5 } })
+2.	Take a slow query from the log and run explain("executionStats") on it.
+3.	If the explain plan shows COLLSCAN (collection scan), the query is likely scanning millions of documents, consuming tickets and causing the queue.
+The fix is often a simple index:
+javascript
+// If a slow query filters on 'email' and 'status'
+db.users.createIndex({ email: 1, status: 1 });
+💡 Next Steps for You
+1.	Run the diagnostic script above in your environment and share the anonymized output.
+2.	Identify your top collection by running db.stats() to see which has the most data/churn.
+3.	Check its indexes: db.yourCollection.getIndexes().
+Would you like to walk through a specific output from your database, or should we focus next on using db.currentOp() to find currently running slow operations?
+db.currentop and how to optimise mongodb server server 
+I'll explain how to use db.currentOp() to diagnose MongoDB performance issues, and provide actionable server optimization strategies.
+🔍 Using db.currentOp() for Real-Time Diagnostics
+Basic Command: Shows all current operations
+javascript
+db.currentOp()
+Key Filters for Troubleshooting
+Use Case	Command	What It Finds
+Find Long-Running Ops	db.currentOp({ "secs_running": { "$gt": 5 } })	Operations running >5 seconds
+Find Blocking Ops	db.currentOp({ "waitingForLock": true })	Operations waiting for locks
+Find by Connection	db.currentOp({ "client": "192.168.1.100:54321" })	Operations from specific client
+Find by Database	db.currentOp({ "ns": /^mydatabase\./ })	Operations on specific database
+Find Slow Writes	db.currentOp({ "op": { "$in": ["insert", "update", "delete"] } })	All write operations
+Find Specific Query	db.currentOp({ "query.filter.email": "user@example.com" })	Operations with specific query
+Interpretation of Key Fields
+javascript
+// Example output from db.currentOp()
+{
+  "desc": "conn6321",          // Connection identifier
+  "client": "10.0.1.15:54123", // Client IP and port
+  "active": true,              // Is operation currently executing?
+  "secs_running": 42,          // Seconds the operation has been running
+  "microsecs_running": NumberLong(42345678),
+  "op": "query",               // Operation type: query, insert, update, remove, command
+  "ns": "shop.orders",         // Namespace (database.collection)
+  "query": {                   // The actual query being executed
+    "find": "orders",
+    "filter": { "userId": "12345", "status": "pending" },
+    "sort": { "createdAt": -1 }
+  },
+  "planSummary": "COLLSCAN",   // Execution plan - WARNING SIGN!
+  "waitingForLock": false,     // True if blocked by another operation
+  "numYields": 125,            // How many times operation yielded (context switches)
+  "locks": {                   // Lock information
+    "Global": "r",             // r=read lock, w=write lock
+    "Database": "r",
+    "Collection": "r"
+  }
+}
+Practical Diagnostic Script
+javascript
+// Find and analyze problematic operations
+function analyzeCurrentOps() {
+  print("=== CURRENT PROBLEMATIC OPERATIONS ===\n");
+  
+  // Find operations running longer than 3 seconds
+  const slowOps = db.currentOp({
+    "active": true,
+    "secs_running": { "$gt": 3 }
+  });
+  
+  let problemCount = 0;
+  
+  slowOps.inProgress.forEach(op => {
+    problemCount++;
+    print(`Problem #${problemCount}:`);
+    print(`  Connection: ${op.desc} from ${op.client}`);
+    print(`  Running: ${op.secs_running} seconds`);
+    print(`  Database: ${op.ns}`);
+    print(`  Operation: ${op.op}`);
+    
+    if (op.planSummary) {
+      print(`  Plan: ${op.planSummary}`);
+      if (op.planSummary.includes("COLLSCAN")) {
+        print("  ⚠️  COLLECTION SCAN - Needs index!");
+      }
+    }
+    
+    if (op.query && op.query.filter) {
+      print(`  Filter keys: ${Object.keys(op.query.filter).join(", ")}`);
+    }
+    
+    if (op.waitingForLock) {
+      print("  ⚠️  WAITING FOR LOCK - Contention issue");
+    }
+    
+    print("");
+  });
+  
+  if (problemCount === 0) {
+    print("✅ No long-running operations found.");
+  }
+  
+  return problemCount;
+}
+
+// Run the analysis
+analyzeCurrentOps();
+Killing Problematic Operations
+javascript
+// Find and kill a specific operation
+const ops = db.currentOp({ "secs_running": { "$gt": 30 } });
+ops.inProgress.forEach(op => {
+  if (op.op === "query" && op.planSummary === "COLLSCAN") {
+    print(`Killing slow collection scan on ${op.ns}...`);
+    db.killOp(op.opid); // Kill by operation ID
+  }
+});
+
+// Kill operation by ID directly
+db.killOp(12345);
+⚡ MongoDB Server Optimization Guide
+1. Memory & Cache Configuration
+yaml
+# In mongod.conf configuration file
+storage:
+  wiredTiger:
+    engineConfig:
+      cacheSizeGB: 8          # Set to 50-70% of available RAM
+      journalCompressor: snappy
+      maxCacheOverflowFileSizeGB: 10
+      
+systemLog:
+  verbosity: 1                # 0=quiet, 1=normal, 2=verbose, 3-5=debug
+  quiet: false
+Rule of thumb: cacheSizeGB = (RAM - 2GB) * 0.7
+•	8GB RAM → ~4GB cache
+•	16GB RAM → ~10GB cache
+•	32GB RAM → ~21GB cache
+2. Query Optimization Checklist
+javascript
+// A. Always use indexes for frequent queries
+db.collection.createIndex({ status: 1, createdAt: -1 });
+db.collection.createIndex({ "user.email": 1 }); // Nested field
+db.collection.createIndex({ location: "2dsphere" }); // Geospatial
+
+// B. Use covered queries when possible
+// Good: Index covers all returned fields
+db.users.find(
+  { status: "active", age: { $gt: 25 } },
+  { _id: 0, name: 1, email: 1 }  // Only projected fields
+).explain("executionStats");
+
+// C. Avoid problematic patterns
+// BAD: Regex without anchor
+db.logs.find({ message: /error/i }); // COLLSCAN
+
+// BETTER: Prefix regex
+db.logs.find({ message: /^error/i }); // Can use index
+
+// D. Batch operations
+// BAD: Multiple single updates
+users.forEach(user => {
+  db.users.update({ _id: user.id }, { $set: { processed: true } });
+});
+
+// GOOD: Bulk write
+const bulk = db.users.initializeUnorderedBulkOp();
+users.forEach(user => {
+  bulk.find({ _id: user.id }).update({ $set: { processed: true } });
+});
+bulk.execute();
+3. Schema Optimization Strategies
+javascript
+// A. Pre-aggregate frequently accessed data
+// Instead of calculating on-the-fly every time
+{
+  _id: "user_123_stats",
+  userId: "123",
+  totalOrders: 45,
+  totalSpent: 12500.50,
+  lastOrderDate: ISODate("2024-01-15"),
+  updatedAt: ISODate("2024-01-16") // For cache invalidation
+}
+
+// B. Use appropriate data types
+// Store dates as Date, not String
+// Store numbers as Number, not String
+// Use BinData for binary data
+
+// C. Implement data lifecycle
+// Create TTL indexes for automatic expiry
+db.sessions.createIndex({ "createdAt": 1 }, { 
+  expireAfterSeconds: 3600 * 24 * 7 // 7 days
+});
+
+// D. Vertical partitioning for large documents
+// If 80% of queries only need basic info
+{
+  _id: "product_789",
+  sku: "ABC123",
+  name: "Laptop",
+  price: 999.99,
+  // Basic fields above
+  detailedInfoId: "detail_789" // Reference to separate collection
+}
+
+// In product_details collection
+{
+  _id: "detail_789",
+  productId: "product_789",
+  specifications: { ... }, // Large object
+  reviews: [ ... ],        // Large array
+  manual: BinData(...)     // Large binary
+}
+4. Index Optimization
+javascript
+// A. Compound index field order matters
+// Query: find({status: "active"}).sort({createdAt: -1})
+db.users.createIndex({ status: 1, createdAt: -1 }); // GOOD
+
+// Query: find({createdAt: {$gt: yesterday}}).sort({status: 1})
+db.users.createIndex({ createdAt: -1, status: 1 }); // GOOD
+
+// B. Partial indexes for selective queries
+// Only index active users if that's 10% of data
+db.users.createIndex(
+  { email: 1 },
+  { partialFilterExpression: { status: "active" } }
+);
+
+// C. Remove unused indexes (check with)
+db.collection.aggregate([
+  { $indexStats: {} },
+  { $match: { accesses: { $lt: 100 } } } // Rarely used indexes
+]);
+
+// D. Background index builds for production
+db.collection.createIndex(
+  { field: 1 },
+  { background: true } // Doesn't block operations
+);
+5. Monitoring & Maintenance Scripts
+javascript
+// Daily health check script
+function dailyHealthCheck() {
+  print("=== MONGODB DAILY HEALTH CHECK ===\n");
+  
+  // 1. Check replication lag (if replica set)
+  if (rs.status) {
+    const status = rs.status();
+    const primary = status.members.find(m => m.state === 1);
+    status.members.forEach(m => {
+      if (m.optime && primary) {
+        const lag = primary.optime.ts - m.optime.ts;
+        print(`Replica ${m.name} lag: ${lag} seconds`);
+      }
+    });
+  }
+  
+  // 2. Check index sizes
+  db.getCollectionNames().forEach(collName => {
+    const stats = db[collName].stats();
+    const indexSizeMB = (stats.totalIndexSize / 1024 / 1024).toFixed(2);
+    const dataSizeMB = (stats.size / 1024 / 1024).toFixed(2);
+    const indexRatio = (stats.totalIndexSize / stats.size * 100).toFixed(1);
+    
+    if (indexRatio > 50) {
+      print(`⚠️  ${collName}: Indexes ${indexSizeMB}MB (${indexRatio}% of data)`);
+    }
+  });
+  
+  // 3. Check collection fragmentation
+  db.getCollectionNames().forEach(collName => {
+    const storage = db[collName].storageSize();
+    const size = db[collName].dataSize();
+    const fragmentation = ((storage - size) / storage * 100).toFixed(1);
+    
+    if (fragmentation > 50) {
+      print(`⚠️  ${collName}: Fragmentation ${fragmentation}%`);
+      print(`    Consider: db.${collName}.compact()`);
+    }
+  });
+  
+  // 4. Check connection stats
+  const connStats = db.serverStatus().connections;
+  print(`\nConnections: ${connStats.current}/${connStats.available} (${((connStats.current/(connStats.current+connStats.available))*100).toFixed(1)}%)`);
+}
+
+// Run compact on a collection (do during low traffic)
+db.runCommand({ compact: "collectionName" });
+6. Configuration Tuning (mongod.conf)
+yaml
+# Production optimized configuration
+net:
+  port: 27017
+  bindIp: 0.0.0.0  # Or specific IPs
+  maxIncomingConnections: 10000
+  
+operationProfiling:
+  mode: slowOp
+  slowOpThresholdMs: 100
+  rateLimit: 100
+  
+replication:
+  oplogSizeMB: 10240  # Larger oplog for heavy write loads
+  
+storage:
+  journal:
+    enabled: true
+    commitIntervalMs: 100  # Default 100ms, reduce for more durability
+  directoryPerDB: true     # Isolate database files
+  syncPeriodSecs: 60       # How often to fsync to disk
+  
+processManagement:
+  fork: true
+  pidFilePath: /var/run/mongodb/mongod.pid
+7. Emergency Response Plan
+When database is slow:
+javascript
+// 1. Immediate diagnostic
+db.currentOp({ "secs_running": { "$gt": 2 } }); // Find blocking ops
+db.serverStatus().globalLock.currentQueue;      // Check queue depth
+db.serverStatus().wiredTiger.cache;             // Check cache pressure
+
+// 2. Quick fixes
+// Kill worst offenders
+db.currentOp({ "secs_running": { "$gt": 30 } }).inProgress.forEach(op => {
+  if (op.planSummary && op.planSummary.includes("COLLSCAN")) {
+    db.killOp(op.opid);
+  }
+});
+
+// 3. Temporary index for emergency
+// If specific query pattern is hammering DB
+db.collection.createIndex(
+  { urgentField: 1 },
+  { background: true, name: "emergency_idx" }
+);
+
+// 4. Reduce load
+// Adjust write concern temporarily
+db.adminCommand({
+  setDefaultRWConcern: {
+    defaultWriteConcern: { w: 1 }  // From w: "majority" to w: 1
+  }
+});
+8. Proactive Monitoring Setup
+javascript
+// Setup for regular monitoring
+// A. Enable profiling for slow queries
+db.setProfilingLevel(1, 100); // Log ops >100ms
+
+// B. Create indexes for system.profile collection
+db.system.profile.createIndex({ ts: -1 });
+db.system.profile.createIndex({ millis: -1 });
+
+// C. Regular slow query report
+function weeklySlowQueryReport() {
+  const weekAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
+  
+  db.system.profile.aggregate([
+    { $match: { ts: { $gt: weekAgo }, millis: { $gt: 100 } } },
+    { $group: {
+      _id: { ns: "$ns", op: "$op", query: "$query.filter" },
+      count: { $sum: 1 },
+      avgMillis: { $avg: "$millis" },
+      maxMillis: { $max: "$millis" },
+      samples: { $push: { ts: "$ts", millis: "$millis" } }
+    }},
+    { $sort: { avgMillis: -1 } },
+    { $limit: 20 }
+  ]).forEach(printjson);
+}
+📊 Optimization Priority Checklist
+1.	Immediate (Do Now):
+o	Add missing indexes for COLLSCAN operations
+o	Kill long-running blocking operations
+o	Ensure working set fits in RAM (cache ratio > 70%)
+2.	Short-term (This Week):
+o	Remove unused indexes
+o	Implement TTL for temporary data
+o	Set up query profiling and monitoring
+3.	Medium-term (This Month):
+o	Schema redesign for hot collections
+o	Implement read/write separation (replica sets)
+o	Shard if data growth > 500GB or write load > 10K ops/sec
+4.	Long-term (Quarterly):
+o	Review and optimize all queries > 100ms
+o	Archive historical data
+o	Test failover and backup procedures
+Next step: Run db.currentOp() on your server and share (anonymized) output. I can help identify specific issues and optimization opportunities for your environment. Would you also like to know about replication or sharding strategies for scaling?
+lhowntonfind cache size of mongo db server using query 
+You can check MongoDB's cache size using several queries. Here's a quick guide:
+📊 Check Cache Size with db.serverStatus()
+Basic Cache Query
+javascript
+// Get detailed cache information
+const status = db.serverStatus();
+const cache = status.wiredTiger.cache;
+
+print("=== MONGODB CACHE STATISTICS ===");
+print(`Maximum cache size: ${(cache['maximum bytes configured'] / 1024 / 1024 / 1024).toFixed(2)} GB`);
+print(`Currently in cache: ${(cache['bytes currently in the cache'] / 1024 / 1024 / 1024).toFixed(2)} GB`);
+print(`Cache usage: ${((cache['bytes currently in the cache'] / cache['maximum bytes configured']) * 100).toFixed(1)}%`);
+Complete Cache Analysis Script
+javascript
+function analyzeCache() {
+  const s = db.serverStatus();
+  const cache = s.wiredTiger.cache;
+  
+  // Convert bytes to GB
+  const bytesToGB = (bytes) => (bytes / 1024 / 1024 / 1024).toFixed(2);
+  
+  const maxCacheGB = bytesToGB(cache['maximum bytes configured']);
+  const currentCacheGB = bytesToGB(cache['bytes currently in the cache']);
+  const dirtyCacheGB = bytesToGB(cache['bytes dirty in the cache']);
+  const cacheRatio = ((cache['bytes currently in the cache'] / cache['maximum bytes configured']) * 100).toFixed(1);
+  
+  print("=== CACHE ANALYSIS ===");
+  print(`📊 Configured Maximum: ${maxCacheGB} GB`);
+  print(`📊 Currently Used: ${currentCacheGB} GB (${cacheRatio}%)`);
+  print(`📊 Dirty Data: ${dirtyCacheGB} GB`);
+  print(`📊 Tracked Dirty: ${bytesToGB(cache['tracked dirty bytes in the cache'])} GB`);
+  
+  // Hit rate statistics
+  print("\n=== CACHE EFFICIENCY ===");
+  print(`🎯 Read Hit Rate: ${((cache['pages read into cache'] - cache['pages read into cache requiring eviction']) / cache['pages read into cache'] * 100).toFixed(1)}%`);
+  print(`📈 Pages Read: ${cache['pages read into cache'].toLocaleString()}`);
+  print(`📉 Pages Written: ${cache['pages written from cache'].toLocaleString()}`);
+  print(`🔄 Evictions: ${cache['evicted dirty pages'] + cache['evicted clean pages']}`);
+  
+  // Performance warnings
+  print("\n=== HEALTH CHECK ===");
+  if (cacheRatio < 50) {
+    print(`⚠️  WARNING: Cache only ${cacheRatio}% full. Consider reducing cache size?`);
+  } else if (cacheRatio > 85) {
+    print(`⚠️  WARNING: Cache is ${cacheRatio}% full. May need more cache/RAM.`);
+  } else {
+    print("✅ Cache utilization is healthy");
+  }
+  
+  const hitRate = ((cache['pages read into cache'] - cache['pages read into cache requiring eviction']) / cache['pages read into cache'] * 100);
+  if (hitRate < 90) {
+    print(`⚠️  WARNING: Cache hit rate is low (${hitRate.toFixed(1)}%). Working set may exceed cache.`);
+  }
+  
+  return {
+    maxGB: parseFloat(maxCacheGB),
+    currentGB: parseFloat(currentCacheGB),
+    ratio: parseFloat(cacheRatio)
+  };
+}
+
+// Run the analysis
+const cacheInfo = analyzeCache();
+🔍 Alternative Methods to Check Cache
+1. Using db.hostInfo()
+javascript
+// Check total system RAM for context
+const hostInfo = db.hostInfo();
+print(`System RAM: ${(hostInfo.system.memSizeMB / 1024).toFixed(1)} GB`);
+print(`MongoDB Process RAM: ${(hostInfo.system.memLimitMB / 1024).toFixed(1)} GB`);
+2. Check Current Memory Usage
+javascript
+// Compare with system memory
+const mem = db.serverStatus().mem;
+print(`MongoDB Virtual Memory: ${mem.virtual} MB`);
+print(`MongoDB Resident Memory: ${mem.resident} MB`);
+print(`Mapped Memory: ${mem.mapped} MB`);
+print(`Mapped with Journal: ${mem.mappedWithJournal} MB`);
+3. Database-Specific Cache Usage
+javascript
+// Check which databases use most cache
+function checkDatabaseSizes() {
+  print("\n=== DATABASE SIZES (Top 5) ===");
+  
+  const dbSizes = [];
+  db.adminCommand({ listDatabases: 1 }).databases.forEach(dbInfo => {
+    const dbName = dbInfo.name;
+    if (!['admin', 'local', 'config'].includes(dbName)) {
+      const stats = db.getSiblingDB(dbName).stats();
+      dbSizes.push({
+        name: dbName,
+        dataSize: stats.dataSize,
+        storageSize: stats.storageSize,
+        indexSize: stats.totalIndexSize
+      });
+    }
+  });
+  
+  // Sort by data size
+  dbSizes.sort((a, b) => b.dataSize - a.dataSize);
+  
+  dbSizes.slice(0, 5).forEach(db => {
+    const dataGB = (db.dataSize / 1024 / 1024 / 1024).toFixed(2);
+    const indexGB = (db.indexSize / 1024 / 1024 / 1024).toFixed(2);
+    const totalGB = ((db.dataSize + db.indexSize) / 1024 / 1024 / 1024).toFixed(2);
+    print(`${db.name}: Data=${dataGB}GB, Indexes=${indexGB}GB, Total=${totalGB}GB`);
+  });
+}
+
+checkDatabaseSizes();
+📈 Cache Optimization Guidelines
+Cache Size Recommendations
+Server RAM	Recommended Cache Size	Configuration Setting
+4 GB	1.5 GB	cacheSizeGB: 1.5
+8 GB	4 GB	cacheSizeGB: 4
+16 GB	10 GB	cacheSizeGB: 10
+32 GB	21 GB	cacheSizeGB: 21
+64 GB	43 GB	cacheSizeGB: 43
+Formula: cacheSizeGB = (Total RAM - 2GB) × 0.7
+How to Adjust Cache Size
+yaml
+# In mongod.conf file (restart required):
+storage:
+  wiredTiger:
+    engineConfig:
+      cacheSizeGB: 10  # Set your desired size here
+Check Current Configuration
+javascript
+// See currently configured cache size
+db.adminCommand({ getCmdLineOpts: 1 }).parsed.storage.wiredTiger.engineConfig;
+🚨 Troubleshooting Cache Issues
+If Cache Ratio is > 90%
+javascript
+// High cache usage - consider increasing RAM or cache
+const cache = db.serverStatus().wiredTiger.cache;
+const ratio = (cache['bytes currently in the cache'] / cache['maximum bytes configured']) * 100;
+
+if (ratio > 90) {
+  print("⚠️  CRITICAL: Cache nearly full!");
+  print("Solutions:");
+  print("1. Increase cacheSizeGB in mongod.conf");
+  print("2. Add more RAM to server");
+  print("3. Reduce working set (archive old data)");
+  print("4. Add indexes to reduce scans");
+}
+If Cache Hit Rate is < 80%
+javascript
+// Poor cache efficiency
+const cache = db.serverStatus().wiredTiger.cache;
+const hitRate = ((cache['pages read into cache'] - cache['pages read into cache requiring eviction']) / cache['pages read into cache'] * 100);
+
+if (hitRate < 80) {
+  print(`⚠️  WARNING: Low cache hit rate (${hitRate.toFixed(1)}%)`);
+  print("Common causes:");
+  print("- Working set larger than cache");
+  print("- Too many collection scans");
+  print("- Random access patterns");
+  print("\nCheck with: db.collection.stats() to see data size");
+}
+📝 One-Line Cache Queries
+javascript
+// Quick cache check (copy-paste friendly)
+print((db.serverStatus().wiredTiger.cache['maximum bytes configured']/1024/1024/1024).toFixed(2) + " GB");
+
+// Cache usage percentage
+print(((db.serverStatus().wiredTiger.cache['bytes currently in the cache']/db.serverStatus().wiredTiger.cache['maximum bytes configured'])*100).toFixed(1) + "%");
+Next Step: Run the analyzeCache() function in your MongoDB shell and share the cache ratio and hit rate percentages. I can then suggest specific optimizations for your server configuration.
+how to find cache size from mongo ops manager 
+Read 10 web pages
+MongoDB Ops Manager provides cache and memory metrics for each individual database process (mongod) in the interface. You can find this information on the deployment's detail page.
+📊 Steps to Find Cache Metrics in Ops Manager
+•	Navigate to Your Deployment
+o	Go to your project in Ops Manager.
+o	Click on your deployment's name to open its detail view.
+•	Open the Metrics View
+o	Click the Metrics button at the top of the deployment page.
+o	You will see a default summary chart. To view system-level metrics like memory and cache, click on the Chart dropdown menu.
+•	Select the Correct Chart
+o	From the dropdown menu, select the chart named Memory. This chart shows several metrics related to memory consumption by the MongoDB process.
+o	On the right side of the chart area, you will find a Metrics Legend. Click the colored boxes next to each metric name to show or hide its line on the graph.
+🔍 Understanding the "Memory" Chart Metrics
+The Memory chart in Ops Manager displays the following key metrics:
+Resident
+This is the actual physical RAM (in MB) consumed by the MongoDB process. It includes the WiredTiger cache as a major component, along with memory for connections and other operations.
+Virtual
+The total virtual memory reserved by the process, including swap space.
+Mapped
+For the older MMAPv1 storage engine, this shows memory-mapped data files. For WiredTiger (the default), this value should be 0.
+💡 What the Chart Can and Cannot Tell You
+•	What You Can See: The Resident Memory metric gives you a strong indication of the total memory footprint of your MongoDB process, of which the WiredTiger cache is the primary part. You can observe its trend and identify unusual spikes.
+•	Limitation: Ops Manager's Memory chart does not directly show the configured maximum size of the WiredTiger cache. The chart shows current usage (Resident), not the upper limit set by storage.wiredTiger.engineConfig.cacheSizeGB.
+🔧 How to Find the Configured Cache Size
+To get the precise, configured maximum cache size for your mongod process, you will need to run a command directly on the MongoDB server:
+javascript
+db.serverStatus().wiredTiger.cache["maximum bytes configured"]
+This command returns the value in bytes. You can also run a more comprehensive check using the diagnostic functions discussed earlier.
+📈 Monitoring Best Practice
+For a complete picture, monitor both the Ops Manager Memory chart for usage trends and use the serverStatus() command to verify the configured cache limit. If Resident memory is consistently near your server's total RAM, it could indicate a need to review your WiredTiger cache size setting or add more system memory.
+I hope this helps you find and interpret the cache information in Ops Manager. Would you like a walkthrough on interpreting the other metrics on the deployment page, such as Query Targeting or Operations?
+analyzeCache mongo query
+Here's the complete analyzeCache function with several enhancements for detailed MongoDB cache analysis. This query provides comprehensive insights into your WiredTiger cache health.
+📊 Enhanced analyzeCache Function
+javascript
+function analyzeCache() {
+  const s = db.serverStatus();
+  const cache = s.wiredTiger.cache;
+  const mem = s.mem;
+  const host = db.hostInfo();
+  
+  // Conversion functions
+  const bytesToGB = (bytes) => (bytes / 1024 / 1024 / 1024).toFixed(2);
+  const bytesToMB = (bytes) => (bytes / 1024 / 1024).toFixed(2);
+  
+  // Core cache metrics
+  const maxBytes = cache['maximum bytes configured'];
+  const currentBytes = cache['bytes currently in the cache'];
+  const dirtyBytes = cache['bytes dirty in the cache'];
+  const trackedDirty = cache['tracked dirty bytes in the cache'];
+  
+  // Calculations
+  const maxCacheGB = bytesToGB(maxBytes);
+  const currentCacheGB = bytesToGB(currentBytes);
+  const dirtyCacheGB = bytesToGB(dirtyBytes);
+  const cacheRatio = ((currentBytes / maxBytes) * 100).toFixed(1);
+  const dirtyRatio = ((dirtyBytes / currentBytes) * 100).toFixed(1);
+  
+  // Performance metrics
+  const pagesRead = cache['pages read into cache'];
+  const pagesEvicted = cache['pages read into cache requiring eviction'];
+  const pagesWritten = cache['pages written from cache'];
+  const hitRate = pagesRead > 0 ? ((pagesRead - pagesEvicted) / pagesRead * 100).toFixed(1) : 100;
+  
+  // System memory context
+  const systemRAMGB = host.system ? (host.system.memSizeMB / 1024).toFixed(2) : 'N/A';
+  const residentMB = mem.resident;
+  const virtualMB = mem.virtual;
+  const mappedMB = mem.mapped;
+  
+  print("=".repeat(60));
+  print("MONGODB CACHE ANALYSIS REPORT");
+  print("=".repeat(60));
+  
+  // Section 1: Cache Configuration
+  print("\n📦 CACHE CONFIGURATION");
+  print("-".repeat(40));
+  print(`Configured Maximum:      ${maxCacheGB} GB (${maxBytes.toLocaleString()} bytes)`);
+  print(`Currently in Use:        ${currentCacheGB} GB`);
+  print(`Usage Percentage:        ${cacheRatio}%`);
+  
+  // Section 2: Cache Contents
+  print("\n🗂️ CACHE CONTENTS");
+  print("-".repeat(40));
+  print(`Dirty Data:              ${dirtyCacheGB} GB (${dirtyRatio}% of cache)`);
+  print(`Tracked Dirty Bytes:     ${bytesToGB(trackedDirty)} GB`);
+  print(`Internal Pages:          ${cache['internal pages in the cache'].toLocaleString()}`);
+  print(`Leaf Pages:              ${cache['leaf pages in the cache'].toLocaleString()}`);
+  
+  // Section 3: Performance Metrics
+  print("\n⚡ PERFORMANCE METRICS");
+  print("-".repeat(40));
+  print(`Cache Hit Rate:          ${hitRate}%`);
+  print(`Pages Read into Cache:   ${pagesRead.toLocaleString()}`);
+  print(`Pages Requiring Eviction: ${pagesEvicted.toLocaleString()}`);
+  print(`Pages Written:           ${pagesWritten.toLocaleString()}`);
+  print(`Evictions (Dirty):       ${cache['evicted dirty pages'].toLocaleString()}`);
+  print(`Evictions (Clean):       ${cache['evicted clean pages'].toLocaleString()}`);
+  print(`Eviction Server Calls:   ${cache['eviction server evicting pages'].toLocaleString()}`);
+  
+  // Section 4: Memory Context
+  print("\n💾 MEMORY CONTEXT");
+  print("-".repeat(40));
+  print(`System RAM:              ${systemRAMGB} GB`);
+  print(`MongoDB Resident Memory: ${residentMB} MB`);
+  print(`MongoDB Virtual Memory:  ${virtualMB} MB`);
+  print(`Mapped Memory:           ${mappedMB} MB`);
+  
+  // Section 5: Thread Activity
+  print("\n🔧 THREAD ACTIVITY");
+  print("-".repeat(40));
+  print(`Worker Threads:          ${cache['worker thread evicting pages'].toLocaleString()}`);
+  print(`Eviction Walk Passes:    ${cache['eviction walk passes'].toLocaleString()}`);
+  print(`Eviction Walk Target:    ${cache['eviction walk target pages histogram - 0-9'].toLocaleString()}`);
+  
+  // Section 6: Health Assessment
+  print("\n🏥 HEALTH ASSESSMENT");
+  print("-".repeat(40));
+  
+  const warnings = [];
+  const recommendations = [];
+  
+  // Check cache utilization
+  if (parseFloat(cacheRatio) < 20) {
+    warnings.push(`Cache underutilized (only ${cacheRatio}% used)`);
+    recommendations.push("Consider reducing cacheSizeGB to free RAM for OS/other processes");
+  } else if (parseFloat(cacheRatio) > 90) {
+    warnings.push(`Cache near capacity (${cacheRatio}% used)`);
+    recommendations.push("1. Increase cacheSizeGB in mongod.conf\n   2. Add more RAM to server\n   3. Archive old data to reduce working set");
+  } else {
+    print("✅ Cache utilization is within optimal range");
+  }
+  
+  // Check hit rate
+  if (parseFloat(hitRate) < 85) {
+    warnings.push(`Low cache hit rate (${hitRate}%)`);
+    recommendations.push("1. Add missing indexes to reduce full collection scans\n   2. Consider increasing cache size if working set is larger than cache");
+  } else {
+    print("✅ Cache hit rate is good");
+  }
+  
+  // Check dirty pages ratio
+  if (parseFloat(dirtyRatio) > 20) {
+    warnings.push(`High dirty pages ratio (${dirtyRatio}%)`);
+    recommendations.push("Check write workload - high dirty ratio indicates heavy writes");
+  }
+  
+  // Check eviction rate
+  const totalEvictions = cache['evicted dirty pages'] + cache['evicted clean pages'];
+  if (totalEvictions > 1000) {
+    warnings.push(`High eviction rate (${totalEvictions} pages evicted)`);
+    recommendations.push("Cache may be too small for working set");
+  }
+  
+  // Display warnings and recommendations
+  if (warnings.length > 0) {
+    print("⚠️ WARNINGS:");
+    warnings.forEach((w, i) => print(`   ${i+1}. ${w}`));
+    
+    print("\n💡 RECOMMENDATIONS:");
+    recommendations.forEach((r, i) => print(`   ${i+1}. ${r}`));
+  }
+  
+  print("\n" + "=".repeat(60));
+  
+  // Return structured data for programmatic use
+  return {
+    cacheConfig: {
+      maxGB: parseFloat(maxCacheGB),
+      currentGB: parseFloat(currentCacheGB),
+      ratio: parseFloat(cacheRatio),
+      maxBytes: maxBytes,
+      currentBytes: currentBytes
+    },
+    cacheContents: {
+      dirtyGB: parseFloat(dirtyCacheGB),
+      dirtyRatio: parseFloat(dirtyRatio),
+      trackedDirtyGB: parseFloat(bytesToGB(trackedDirty)),
+      internalPages: cache['internal pages in the cache'],
+      leafPages: cache['leaf pages in the cache']
+    },
+    performance: {
+      hitRate: parseFloat(hitRate),
+      pagesRead: pagesRead,
+      pagesEvicted: pagesEvicted,
+      pagesWritten: pagesWritten,
+      evictionsDirty: cache['evicted dirty pages'],
+      evictionsClean: cache['evicted clean pages']
+    },
+    memory: {
+      systemRAMGB: systemRAMGB !== 'N/A' ? parseFloat(systemRAMGB) : null,
+      residentMB: residentMB,
+      virtualMB: virtualMB,
+      mappedMB: mappedMB
+    },
+    health: {
+      warnings: warnings,
+      recommendations: recommendations,
+      status: warnings.length === 0 ? 'HEALTHY' : 'NEEDS_ATTENTION'
+    }
+  };
+}
+
+// Run the analysis
+const cacheReport = analyzeCache();
+📈 Quick Analysis Functions
+1. Simple Cache Status
+javascript
+// One-liner for quick check
+function quickCacheCheck() {
+  const c = db.serverStatus().wiredTiger.cache;
+  const ratio = ((c['bytes currently in the cache'] / c['maximum bytes configured']) * 100).toFixed(1);
+  const hitRate = ((c['pages read into cache'] - c['pages read into cache requiring eviction']) / c['pages read into cache'] * 100).toFixed(1);
+  return `Cache: ${ratio}% used, Hit Rate: ${hitRate}%`;
+}
+
+print(quickCacheCheck());
+2. Compare Databases Cache Usage
+javascript
+function compareDBCacheUsage() {
+  print("\n📊 DATABASE CACHE USAGE COMPARISON");
+  print("=".repeat(50));
+  
+  const dbList = db.adminCommand({ listDatabases: 1 }).databases;
+  const results = [];
+  
+  dbList.forEach(dbInfo => {
+    if (!['admin', 'local', 'config'].includes(dbInfo.name)) {
+      const db = db.getSiblingDB(dbInfo.name);
+      const stats = db.stats();
+      
+      const totalSize = stats.dataSize + stats.totalIndexSize;
+      const totalGB = (totalSize / 1024 / 1024 / 1024).toFixed(3);
+      
+      results.push({
+        name: dbInfo.name,
+        dataGB: (stats.dataSize / 1024 / 1024 / 1024).toFixed(3),
+        indexGB: (stats.totalIndexSize / 1024 / 1024 / 1024).toFixed(3),
+        totalGB: totalGB,
+        collections: stats.collections,
+        objects: stats.objects
+      });
+    }
+  });
+  
+  // Sort by total size
+  results.sort((a, b) => parseFloat(b.totalGB) - parseFloat(a.totalGB));
+  
+  // Print table
+  print("Database          Data(GB)  Index(GB) Total(GB) Collections Objects");
+  print("-".repeat(65));
+  
+  results.forEach(db => {
+    print(
+      db.name.padEnd(16) + 
+      db.dataGB.padStart(9) + 
+      db.indexGB.padStart(10) + 
+      db.totalGB.padStart(10) + 
+      db.collections.toString().padStart(12) + 
+      db.objects.toLocaleString().padStart(10)
+    );
+  });
+  
+  // Summary
+  const totalDataGB = results.reduce((sum, db) => sum + parseFloat(db.totalGB), 0).toFixed(2);
+  const cacheInfo = db.serverStatus().wiredTiger.cache;
+  const cacheGB = (cacheInfo['maximum bytes configured'] / 1024 / 1024 / 1024).toFixed(2);
+  
+  print("\n📈 SUMMARY:");
+  print(`Total Data Size: ${totalDataGB} GB`);
+  print(`Configured Cache: ${cacheGB} GB`);
+  print(`Ratio: ${((totalDataGB / cacheGB) * 100).toFixed(1)}%`);
+  
+  if (totalDataGB > cacheGB * 0.8) {
+    print("⚠️  WARNING: Total data size exceeds 80% of cache. Working set may not fit.");
+  }
+}
+3. Cache Trend Monitor
+javascript
+// Run this periodically to track cache usage trends
+function monitorCacheTrend(samples = 10, intervalSeconds = 5) {
+  print(`Monitoring cache for ${samples} samples at ${intervalSeconds}s intervals...\n`);
+  
+  const trendData = [];
+  
+  for (let i = 0; i < samples; i++) {
+    const cache = db.serverStatus().wiredTiger.cache;
+    const usage = (cache['bytes currently in the cache'] / cache['maximum bytes configured'] * 100).toFixed(1);
+    const dirty = (cache['bytes dirty in the cache'] / cache['bytes currently in the cache'] * 100).toFixed(1);
+    const timestamp = new Date().toLocaleTimeString();
+    
+    trendData.push({ time: timestamp, usage: usage, dirty: dirty });
+    
+    print(`[${timestamp}] Cache: ${usage}% used, Dirty: ${dirty}%`);
+    
+    if (i < samples - 1) {
+      sleep(intervalSeconds * 1000);
+    }
+  }
+  
+  // Analyze trend
+  print("\n📈 TREND ANALYSIS:");
+  const avgUsage = (trendData.reduce((sum, d) => sum + parseFloat(d.usage), 0) / trendData.length).toFixed(1);
+  const maxUsage = Math.max(...trendData.map(d => parseFloat(d.usage))).toFixed(1);
+  const minUsage = Math.min(...trendData.map(d => parseFloat(d.usage))).toFixed(1);
+  
+  print(`Average Usage: ${avgUsage}%`);
+  print(`Maximum Usage: ${maxUsage}%`);
+  print(`Minimum Usage: ${minUsage}%`);
+  print(`Variation: ${(maxUsage - minUsage).toFixed(1)}%`);
+  
+  if (maxUsage > 90) {
+    print("⚠️  Cache consistently near capacity - consider increasing cache size");
+  }
+  
+  return trendData;
+}
+🚨 Troubleshooting Specific Issues
+1. High Eviction Rate Diagnosis
+javascript
+function diagnoseEvictions() {
+  const cache = db.serverStatus().wiredTiger.cache;
+  const evictions = cache['evicted dirty pages'] + cache['evicted clean pages'];
+  const usage = (cache['bytes currently in the cache'] / cache['maximum bytes configured'] * 100).toFixed(1);
+  
+  print("🔍 EVICTION DIAGNOSIS");
+  print("=".repeat(40));
+  print(`Total Evictions: ${evictions.toLocaleString()}`);
+  print(`Cache Usage: ${usage}%`);
+  print(`Dirty Ratio: ${(cache['bytes dirty in the cache'] / cache['bytes currently in the cache'] * 100).toFixed(1)}%`);
+  
+  if (evictions > 10000) {
+    print("\n⚠️  CRITICAL: Very high eviction rate");
+    print("Possible causes:");
+    print("1. Cache size too small for working set");
+    print("2. Heavy write workload creating many dirty pages");
+    print("3. Large scans pushing useful data out of cache");
+    
+    print("\nImmediate actions:");
+    print("1. Check current queries with db.currentOp()");
+    print("2. Look for full collection scans (COLLSCAN)");
+    print("3. Consider increasing cacheSizeGB");
+  }
+}
+2. Low Hit Rate Investigation
+javascript
+function investigateLowHitRate() {
+  const cache = db.serverStatus().wiredTiger.cache;
+  const hitRate = ((cache['pages read into cache'] - cache['pages read into cache requiring eviction']) / 
+                  cache['pages read into cache'] * 100).toFixed(1);
+  
+  print("🔍 LOW HIT RATE INVESTIGATION");
+  print("=".repeat(40));
+  print(`Current Hit Rate: ${hitRate}%`);
+  
+  if (hitRate < 85) {
+    print("\n🔎 Checking for common issues...");
+    
+    // Check for active queries
+    const activeOps = db.currentOp({ "active": true });
+    let scanOps = 0;
+    
+    activeOps.inProgress.forEach(op => {
+      if (op.planSummary && op.planSummary.includes("COLLSCAN")) {
+        scanOps++;
+        print(`Found collection scan: ${op.ns} (running ${op.secs_running}s)`);
+      }
+    });
+    
+    if (scanOps > 0) {
+      print(`\n⚠️  Found ${scanOps} collection scans in progress`);
+      print("These force reads from disk and pollute cache");
+      print("Recommendation: Add appropriate indexes");
+    }
+    
+    // Check cache size vs data size
+    const cacheGB = (cache['maximum bytes configured'] / 1024 / 1024 / 1024).toFixed(2);
+    
+    // Get approximate data size
+    let totalDataSize = 0;
+    db.adminCommand({ listDatabases: 1 }).databases.forEach(dbInfo => {
+      if (!['admin', 'local', 'config'].includes(dbInfo.name)) {
+        const stats = db.getSiblingDB(dbInfo.name).stats();
+        totalDataSize += stats.dataSize + stats.totalIndexSize;
+      }
+    });
+    
+    const totalDataGB = (totalDataSize / 1024 / 1024 / 1024).toFixed(2);
+    const ratio = (totalDataGB / cacheGB).toFixed(1);
+    
+    print(`\n📊 Size Analysis:`);
+    print(`Total Data: ${totalDataGB} GB`);
+    print(`Cache Size: ${cacheGB} GB`);
+    print(`Ratio: ${ratio}:1`);
+    
+    if (ratio > 2) {
+      print("⚠️  Working set significantly larger than cache");
+      print("Consider: Increase cache size or reduce working set");
+    }
+  }
+}
+📋 Complete Analysis Workflow
+javascript
+// Complete cache analysis workflow
+function fullCacheAnalysis() {
+  print("🚀 STARTING COMPLETE CACHE ANALYSIS");
+  print("=".repeat(60));
+  
+  // 1. Basic cache status
+  const report = analyzeCache();
+  
+  // 2. Database comparison
+  compareDBCacheUsage();
+  
+  // 3. If issues found, run deeper diagnostics
+  if (report.health.status === 'NEEDS_ATTENTION') {
+    if (report.performance.hitRate < 85) {
+      investigateLowHitRate();
+    }
+    
+    if (report.performance.evictionsDirty + report.performance.evictionsClean > 1000) {
+      diagnoseEvictions();
+    }
+  }
+  
+  // 4. Recommendations summary
+  print("\n🎯 ACTION ITEMS SUMMARY:");
+  print("=".repeat(40));
+  
+  if (report.health.recommendations.length > 0) {
+    report.health.recommendations.forEach((rec, i) => {
+      print(`${i+1}. ${rec}`);
+    });
+  } else {
+    print("✅ Cache configuration appears optimal");
+  }
+  
+  return report;
+}
+
+// Run the complete analysis
+const finalReport = fullCacheAnalysis();
+Usage Tips:
+1.	Run analyzeCache() for a detailed snapshot of your cache health
+2.	Use quickCacheCheck() for a one-line status during monitoring
+3.	Run fullCacheAnalysis() when troubleshooting performance issues
+4.	Schedule monitorCacheTrend() to track usage patterns over time
+Next Steps: Run analyzeCache() on your MongoDB instance and share the health assessment section. I can help you interpret specific warnings and provide targeted optimization advice based on your actual cache metrics.
+export this entire chat as word document
+I cannot directly export this chat to a Word document, but I can help you create one by providing the complete, formatted content. You can copy and paste the sections below into Microsoft Word or Google Docs.
+Here is the entire chat conversation, formatted for easy export:
+MongoDB Performance Tuning & Schema Analysis Guide
+1. MongoDB Schema Analysis and Performance Optimization
+1.1 How to Export MongoDB Schema
+Since MongoDB is schemaless, there's no direct "schema export" command, but you can infer the schema from existing data:
+Using MongoDB Compass:
+•	Connect to your database
+•	Select a collection
+•	Go to "Schema" tab
+•	Click "Export Schema" button
+•	Choose JSON or other formats
+Using mongodump (Export Entire Database):
+bash
+mongodump --uri="mongodb://localhost:27017/dbname" --out=/path/to/export
+Using mongoexport (Export as JSON/CSV):
+bash
+mongoexport --uri="mongodb://localhost:27017/dbname" \
+  --collection=collectionname \
+  --out=output.json
+Programmatic Schema Analysis:
+javascript
+function analyzeSchema(collectionName, sampleSize = 1000) {
+  const types = {};
+  const sample = db[collectionName].aggregate([{ $sample: { size: sampleSize } }]);
+  
+  sample.forEach(doc => {
+    for (const key in doc) {
+      const type = Array.isArray(doc[key]) ? 'array' : typeof doc[key];
+      types[key] = types[key] || new Set();
+      types[key].add(type);
+    }
+  });
+  
+  const schema = {};
+  for (const key in types) {
+    schema[key] = Array.from(types[key]);
+  }
+  
+  return schema;
+}
+1.2 Analyzing Problematic and Low-Performing Schemas
+Step 1: Analyze Document Structure
+•	Unbounded Arrays: Arrays that grow without limit force MongoDB to rewrite entire documents
+•	Excessive Embedding/Nesting: Documents approaching 16MB limit are inefficient
+•	Inappropriate Data Types: Using text for numeric data prevents index usage
+•	Lack of Document Lifecycle: Collections that grow forever degrade performance
+Step 2: Diagnose Query Performance
+Use explain("executionStats") to identify:
+•	High totalDocsExamined vs nReturned (indicates collection scan)
+•	COLLSCAN stage (query reading every document)
+•	In-memory SORT operations
+•	High executionTimeMillis
+Step 3: Check Database Metrics
+•	Locking Contention: High values in globalLock.currentQueue.total
+•	Memory Pressure: High page fault rate
+•	WiredTiger Ticket Exhaustion: Read/write tickets consistently below 128
+1.3 Using explain() and db.serverStatus() for Analysis
+explain("executionStats") Examples:
+javascript
+// Analyze a query
+db.users.find({ age: { $gt: 25 }, city: "London" }).explain("executionStats");
+
+// Key metrics to check:
+// - executionStats.executionTimeMillis (>100ms = investigate)
+// - executionStats.totalDocsExamined (should be close to nReturned)
+// - executionStats.executionStages.stage (COLLSCAN = warning)
+db.serverStatus() Key Metrics:
+javascript
+const status = db.serverStatus();
+
+// Critical checks
+print("Current queue length: " + status.globalLock.currentQueue.total);
+if (status.globalLock.currentQueue.total > 10) {
+  print("WARNING: High lock contention");
+}
+
+const cacheSize = status.wiredTiger.cache["bytes currently in the cache"];
+const cacheMax = status.wiredTiger.cache["maximum bytes configured"];
+const cacheRatio = (cacheSize / cacheMax * 100).toFixed(1);
+print(`Cache usage: ${cacheRatio}%`);
+
+const readTickets = status.wiredTiger.concurrentTransactions.read.available;
+const writeTickets = status.wiredTiger.concurrentTransactions.write.available;
+print(`Available tickets - Read: ${readTickets}/128, Write: ${writeTickets}/128`);
+1.4 Diagnostic Workflow Example
+javascript
+// 1. Find slow queries from logs
+db.getProfilingStatus();
+db.system.profile.find().sort({ ts: -1 }).limit(5);
+
+// 2. Analyze a specific slow query
+const explainResult = db.orders.find({
+  userId: "12345",
+  createdAt: { $gt: new Date("2024-01-01") }
+}).sort({ total: -1 }).explain("executionStats");
+
+// 3. Look for red flags
+if (explainResult.executionStats.totalDocsExamined > 1000) {
+  print("TOO MANY DOCS SCANNED: " + explainResult.executionStats.totalDocsExamined);
+}
+2. Using db.currentOp() for Real-Time Diagnostics
+2.1 Basic Commands and Filters
+Find Long-Running Operations:
+javascript
+db.currentOp({ "secs_running": { "$gt": 5 } })
+Find Blocking Operations:
+javascript
+db.currentOp({ "waitingForLock": true })
+Find by Database:
+javascript
+db.currentOp({ "ns": /^mydatabase\./ })
+2.2 Interpretation of Key Fields
+javascript
+{
+  "desc": "conn6321",           // Connection identifier
+  "client": "10.0.1.15:54123",  // Client IP and port
+  "active": true,               // Is operation currently executing?
+  "secs_running": 42,           // Seconds running
+  "op": "query",                // Operation type
+  "ns": "shop.orders",          // Namespace (database.collection)
+  "planSummary": "COLLSCAN",    // Execution plan - WARNING SIGN!
+  "waitingForLock": false,      // True if blocked
+  "numYields": 125,             // Context switches
+  "locks": {                    // Lock information
+    "Global": "r",              // r=read lock, w
+how to identify all collections that need index?
+There are several effective ways to identify collections that need indexes in MongoDB. Here are the most practical approaches:
+🔍 Method 1: Using explain() to Find Collection Scans
+The most direct way is to analyze your queries for COLLSCAN operations:
+javascript
+// Enable profiling to capture slow queries
+db.setProfilingLevel(1, 100); // Log ops >100ms
+
+// Analyze profiled queries for collection scans
+function findCollectionsNeedingIndexes() {
+  print("=== COLLECTIONS NEEDING INDEXES ===");
+  print("Analyzing system.profile for COLLSCAN operations...\n");
+  
+  const slowQueries = db.system.profile.aggregate([
+    {
+      $match: {
+        op: { $in: ["query", "getmore", "update", "remove"] },
+        ns: { $not: /\.system\./ } // Exclude system collections
+      }
+    },
+    {
+      $group: {
+        _id: "$ns",
+        collscanCount: { 
+          $sum: { 
+            $cond: [{ $regexMatch: { input: "$planSummary", regex: /COLLSCAN/ } }, 1, 0] 
+          } 
+        },
+        totalQueries: { $sum: 1 },
+        avgMillis: { $avg: "$millis" },
+        maxMillis: { $max: "$millis" },
+        sampleQueries: { $push: { filter: "$query.filter", millis: "$millis" } }
+      }
+    },
+    { $match: { collscanCount: { $gt: 0 } } },
+    { $sort: { collscanCount: -1 } }
+  ]);
+  
+  let results = [];
+  slowQueries.forEach(query => {
+    print(`Collection: ${query._id}`);
+    print(`  Collection Scans: ${query.collscanCount} of ${query.totalQueries} queries`);
+    print(`  Avg Response Time: ${query.avgMillis.toFixed(2)}ms`);
+    print(`  Max Response Time: ${query.maxMillis}ms`);
+    
+    // Show sample of problematic queries
+    query.sampleQueries.slice(0, 2).forEach((sample, i) => {
+      if (sample.filter) {
+        print(`  Sample Query ${i+1}: ${JSON.stringify(sample.filter).substring(0, 100)}... (${sample.millis}ms)`);
+      }
+    });
+    
+    print("");
+    results.push(query);
+  });
+  
+  if (results.length === 0) {
+    print("✅ No collections found with collection scans in profiled queries.");
+    print("Tip: Run some production queries first, or lower profiling threshold:");
+    print("db.setProfilingLevel(1, 50); // Log ops >50ms");
+  }
+  
+  return results;
+}
+
+// Run the analysis
+findCollectionsNeedingIndexes();
+📊 Method 2: Analyze Current Operations for Missing Indexes
+javascript
+// Check currently running operations
+function analyzeCurrentOpsForIndexes() {
+  print("=== CURRENT OPERATIONS ANALYSIS ===");
+  
+  const currentOps = db.currentOp({
+    "active": true,
+    "secs_running": { "$gt": 2 },
+    "ns": { $not: /(system|admin)/ }
+  });
+  
+  const collectionsNeedingIndexes = new Set();
+  
+  currentOps.inProgress.forEach(op => {
+    if (op.planSummary && op.planSummary.includes("COLLSCAN")) {
+      print(`⚠️  Collection scan detected on: ${op.ns}`);
+      print(`   Operation: ${op.op}, Running: ${op.secs_running}s`);
+      
+      if (op.query && op.query.filter) {
+        const filterKeys = Object.keys(op.query.filter);
+        if (filterKeys.length > 0) {
+          print(`   Filter fields: ${filterKeys.join(", ")}`);
+          print(`   Suggested index: db.${op.ns.split('.')[1]}.createIndex({ ${filterKeys.map(k => `${k}: 1`).join(", ")} })`);
+        }
+      }
+      
+      collectionsNeedingIndexes.add(op.ns);
+      print("");
+    }
+  });
+  
+  if (collectionsNeedingIndexes.size === 0) {
+    print("✅ No active collection scans found.");
+  } else {
+    print(`\n📋 Collections needing indexes: ${Array.from(collectionsNeedingIndexes).join(", ")}`);
+  }
+  
+  return collectionsNeedingIndexes;
+}
+
+analyzeCurrentOpsForIndexes();
+🗂️ Method 3: Check Index Coverage Statistics
+javascript
+// Analyze index usage across all collections
+function analyzeIndexCoverage() {
+  print("=== INDEX COVERAGE ANALYSIS ===");
+  print("Checking all non-system collections...\n");
+  
+  const allCollections = db.getCollectionNames().filter(name => !name.includes('system.'));
+  const results = [];
+  
+  allCollections.forEach(collectionName => {
+    const collection = db[collectionName];
+    const stats = collection.stats();
+    const indexStats = db[collectionName].aggregate([{ $indexStats: {} }]).toArray();
+    
+    // Calculate index coverage
+    const totalIndexSize = stats.totalIndexSize;
+    const dataSize = stats.size;
+    const indexCoverage = dataSize > 0 ? (totalIndexSize / dataSize * 100).toFixed(1) : 0;
+    
+    // Get index usage
+    let unusedIndexes = 0;
+    let totalAccesses = 0;
+    
+    indexStats.forEach(idx => {
+      if (idx.accesses && idx.accesses.ops < 10) { // Index used less than 10 times
+        unusedIndexes++;
+      }
+      if (idx.accesses) {
+        totalAccesses += idx.accesses.ops;
+      }
+    });
+    
+    // Check if collection has any indexes
+    const hasIndexes = stats.nindexes > 1; // More than just _id index
+    
+    // Flag collections that might need indexes
+    let needsIndex = false;
+    let reasons = [];
+    
+    if (!hasIndexes) {
+      needsIndex = true;
+      reasons.push("No indexes (only _id)");
+    }
+    
+    if (stats.count > 1000 && !hasIndexes) {
+      needsIndex = true;
+      reasons.push("Large collection with no indexes");
+    }
+    
+    if (indexCoverage < 10 && stats.count > 10000) {
+      needsIndex = true;
+      reasons.push("Low index coverage for large dataset");
+    }
+    
+    if (needsIndex) {
+      results.push({
+        collection: collectionName,
+        documentCount: stats.count,
+        dataSizeMB: (stats.size / 1024 / 1024).toFixed(2),
+        indexes: stats.nindexes,
+        indexCoverage: indexCoverage + '%',
+        unusedIndexes: unusedIndexes,
+        needsIndex: true,
+        reasons: reasons
+      });
+    }
+  });
+  
+  // Display results
+  if (results.length > 0) {
+    print("📋 Collections that likely need indexes:");
+    print("Collection".padEnd(25) + "Documents".padEnd(12) + "Size(MB)".padEnd(12) + "Indexes".padEnd(10) + "Issues");
+    print("-".repeat(80));
+    
+    results.forEach(r => {
+      print(`${r.collection.padEnd(25)}${r.documentCount.toLocaleString().padEnd(12)}${r.dataSizeMB.padEnd(12)}${r.indexes.toString().padEnd(10)}${r.reasons.join(", ")}`);
+    });
+  } else {
+    print("✅ All collections appear to have adequate indexing.");
+  }
+  
+  return results;
+}
+
+analyzeIndexCoverage();
+🔎 Method 4: Query Pattern Analysis
+javascript
+// Analyze common query patterns to suggest indexes
+function analyzeQueryPatterns(daysToAnalyze = 7) {
+  print("=== QUERY PATTERN ANALYSIS ===");
+  print(`Analyzing queries from last ${daysToAnalyze} days...\n`);
+  
+  const startTime = new Date(Date.now() - daysToAnalyze * 24 * 60 * 60 * 1000);
+  
+  const queryPatterns = db.system.profile.aggregate([
+    {
+      $match: {
+        ts: { $gt: startTime },
+        op: { $in: ["query", "count", "distinct", "find"] },
+        ns: { $not: /\.system\./ }
+      }
+    },
+    {
+      $group: {
+        _id: {
+          ns: "$ns",
+          operation: "$op",
+          command: "$command" ? Object.keys($command).sort().join(",") : null
+        },
+        count: { $sum: 1 },
+        avgMillis: { $avg: "$millis" },
+        totalMillis: { $sum: "$millis" },
+        sampleFilters: { $addToSet: "$query.filter" }
+      }
+    },
+    { $sort: { totalMillis: -1 } },
+    { $limit: 20 }
+  ]);
+  
+  print("Top 20 most time-consuming query patterns:");
+  print("Collection".padEnd(25) + "Operation".padEnd(12) + "Count".padEnd(10) + "Avg(ms)".padEnd(12) + "Total(s)");
+  print("-".repeat(80));
+  
+  const suggestions = [];
+  
+  queryPatterns.forEach(pattern => {
+    const collection = pattern._id.ns;
+    const avgMs = pattern.avgMillis.toFixed(1);
+    const totalSeconds = (pattern.totalMillis / 1000).toFixed(1);
+    
+    print(`${collection.padEnd(25)}${pattern._id.operation.padEnd(12)}${pattern.count.toString().padEnd(10)}${avgMs.padEnd(12)}${totalSeconds}`);
+    
+    // Analyze sample filters for index suggestions
+    if (pattern.sampleFilters && pattern.sampleFilters.length > 0) {
+      const sampleFilter = pattern.sampleFilters[0];
+      if (sampleFilter && typeof sampleFilter === 'object') {
+        const filterKeys = Object.keys(sampleFilter);
+        if (filterKeys.length > 0 && filterKeys.length <= 3) {
+          // Simple filter - good candidate for index
+          const indexSuggestion = filterKeys.map(k => `${k}: 1`).join(", ");
+          suggestions.push({
+            collection: collection,
+            fields: filterKeys,
+            suggestion: `db.${collection.split('.')[1]}.createIndex({ ${indexSuggestion} })`
+          });
+        }
+      }
+    }
+  });
+  
+  // Display index suggestions
+  if (suggestions.length > 0) {
+    print("\n💡 INDEX SUGGESTIONS:");
+    suggestions.forEach((s, i) => {
+      print(`${i+1}. ${s.collection}: Fields [${s.fields.join(", ")}]`);
+      print(`   ${s.suggestion}`);
+    });
+  }
+  
+  return suggestions;
+}
+
+// Note: Requires profiling to be enabled
+// db.setProfilingLevel(1, 100)  // Enable first
+analyzeQueryPatterns(1); // Analyze 1 day of queries
+🛠️ Method 5: Comprehensive Index Health Check
+javascript
+// Complete index analysis across all collections
+function comprehensiveIndexHealthCheck() {
+  print("=".repeat(80));
+  print("COMPREHENSIVE INDEX HEALTH CHECK");
+  print("=".repeat(80));
+  
+  const allCollections = db.getCollectionNames().filter(name => !name.startsWith('system.'));
+  const report = {
+    needsIndexes: [],
+    hasPoorIndexes: [],
+    hasGoodCoverage: []
+  };
+  
+  allCollections.forEach(collectionName => {
+    print(`\n🔍 Analyzing: ${collectionName}`);
+    
+    try {
+      const coll = db[collectionName];
+      const stats = coll.stats();
+      const indexes = coll.getIndexes();
+      const indexStats = coll.aggregate([{ $indexStats: {} }]).toArray();
+      
+      // Basic stats
+      const docCount = stats.count;
+      const hasOnlyIdIndex = indexes.length <= 1;
+      const collectionSizeMB = (stats.size / 1024 / 1024).toFixed(2);
+      
+      print(`   Documents: ${docCount.toLocaleString()}, Size: ${collectionSizeMB} MB`);
+      print(`   Indexes: ${indexes.length} total`);
+      
+      // Check for missing indexes
+      if (hasOnlyIdIndex && docCount > 100) {
+        print(`   ⚠️  ONLY _id INDEX: Large collection with no custom indexes`);
+        report.needsIndexes.push({
+          collection: collectionName,
+          reason: "Only has _id index",
+          documentCount: docCount
+        });
+      }
+      
+      // Analyze index usage
+      let unusedIndexes = [];
+      let frequentlyUsedIndexes = [];
+      
+      indexStats.forEach((idxStat, i) => {
+        if (idxStat.name !== '_id_') { // Skip _id index
+          const ops = idxStat.accesses ? idxStat.accesses.ops : 0;
+          const since = idxStat.accesses ? idxStat.since : new Date();
+          
+          if (ops < 10) {
+            unusedIndexes.push(idxStat.name);
+          } else if (ops > 1000) {
+            frequentlyUsedIndexes.push({ name: idxStat.name, ops: ops });
+          }
+        }
+      });
+      
+      if (unusedIndexes.length > 0) {
+        print(`   ⚠️  UNUSED INDEXES: ${unusedIndexes.join(", ")}`);
+        report.hasPoorIndexes.push({
+          collection: collectionName,
+          reason: "Has unused indexes",
+          indexes: unusedIndexes
+        });
+      }
+      
+      if (frequentlyUsedIndexes.length > 0) {
+        print(`   ✅ FREQUENTLY USED: ${frequentlyUsedIndexes.map(i => `${i.name} (${i.ops} ops)`).join(", ")}`);
+      }
+      
+      // Check index size vs data size
+      const indexSizeMB = (stats.totalIndexSize / 1024 / 1024).toFixed(2);
+      const indexToDataRatio = stats.size > 0 ? (stats.totalIndexSize / stats.size) : 0;
+      
+      print(`   Index Size: ${indexSizeMB} MB (${(indexToDataRatio * 100).toFixed(1)}% of data)`);
+      
+      if (indexToDataRatio > 0.5) {
+        print(`   ⚠️  LARGE INDEX FOOTPRINT: Indexes are ${(indexToDataRatio * 100).toFixed(1)}% of data size`);
+      }
+      
+      // Determine overall health
+      if (!hasOnlyIdIndex && unusedIndexes.length === 0) {
+        report.hasGoodCoverage.push(collectionName);
+      }
+      
+    } catch (e) {
+      print(`   ⚠️  Error analyzing: ${e.message}`);
+    }
+  });
+  
+  // Summary report
+  print("\n" + "=".repeat(80));
+  print("SUMMARY REPORT");
+  print("=".repeat(80));
+  
+  print(`\n📋 Collections analyzed: ${allCollections.length}`);
+  print(`✅ Good index coverage: ${report.hasGoodCoverage.length}`);
+  print(`⚠️  Need indexes: ${report.needsIndexes.length}`);
+  print(`🔄 Has unused indexes: ${report.hasPoorIndexes.length}`);
+  
+  if (report.needsIndexes.length > 0) {
+    print("\n🚨 COLLECTIONS NEEDING INDEXES:");
+    report.needsIndexes.forEach(item => {
+      print(`   ${item.collection} (${item.documentCount.toLocaleString()} docs): ${item.reason}`);
+    });
+  }
+  
+  if (report.hasPoorIndexes.length > 0) {
+    print("\n🗑️  COLLECTIONS WITH UNUSED INDEXES (consider removing):");
+    report.hasPoorIndexes.forEach(item => {
+      print(`   ${item.collection}: ${item.indexes.join(", ")}`);
+    });
+  }
+  
+  if (report.hasGoodCoverage.length > 0) {
+    print("\n✅ COLLECTIONS WITH GOOD INDEX COVERAGE:");
+    print(`   ${report.hasGoodCoverage.join(", ")}`);
+  }
+  
+  return report;
+}
+
+// Run the comprehensive check
+const healthReport = comprehensiveIndexHealthCheck();
+📈 Method 6: Index Recommendations Based on $indexStats
+javascript
+// Get index usage statistics and make recommendations
+function getIndexRecommendations() {
+  print("=== INDEX USAGE RECOMMENDATIONS ===");
+  
+  const collections = db.getCollectionNames().filter(name => !name.includes('system.'));
+  const recommendations = [];
+  
+  collections.forEach(collectionName => {
+    try {
+      const indexStats = db[collectionName].aggregate([{ $indexStats: {} }]).toArray();
+      const stats = db[collectionName].stats();
+      
+      // Analyze each index
+      indexStats.forEach(index => {
+        if (index.name !== '_id_') { // Skip _id index
+          const ops = index.accesses ? index.accesses.ops : 0;
+          const daysSinceCreation = index.accesses ? 
+            Math.floor((new Date() - new Date(index.accesses.since)) / (1000 * 60 * 60 * 24)) : 0;
+          
+          const opsPerDay = daysSinceCreation > 0 ? (ops / daysSinceCreation).toFixed(2) : 0;
+          
+          // Recommendations based on usage
+          if (ops === 0 && daysSinceCreation > 30) {
+            recommendations.push({
+              type: "REMOVE",
+              collection: collectionName,
+              index: index.name,
+              reason: `Never used in ${daysSinceCreation} days`,
+              command: `db.${collectionName}.dropIndex("${index.name}")`
+            });
+          } else if (opsPerDay < 0.1 && daysSinceCreation > 7) {
+            recommendations.push({
+              type: "REVIEW",
+              collection: collectionName,
+              index: index.name,
+              reason: `Rarely used (${opsPerDay} ops/day)`,
+              suggestion: "Consider removing if not needed for critical queries"
+            });
+          } else if (opsPerDay > 100) {
+            recommendations.push({
+              type: "IMPORTANT",
+              collection: collectionName,
+              index: index.name,
+              reason: `Heavily used (${opsPerDay} ops/day)`,
+              suggestion: "Ensure this index is optimized and maintained"
+            });
+          }
+        }
+      });
+      
+      // Check if collection needs indexes
+      if (stats.nindexes === 1 && stats.count > 1000) {
+        recommendations.push({
+          type: "CREATE",
+          collection: collectionName,
+          index: "NEEDS_INDEX",
+          reason: `Large collection (${stats.count} docs) with only _id index`,
+          suggestion: "Analyze query patterns to determine needed indexes"
+        });
+      }
+      
+    } catch (e) {
+      // Skip collections that can't be analyzed
+    }
+  });
+  
+  // Display recommendations
+  if (recommendations.length > 0) {
+    print("\nRecommendations by priority:\n");
+    
+    // Group by type
+    const byType = {
+      "REMOVE": recommendations.filter(r => r.type === "REMOVE"),
+      "CREATE": recommendations.filter(r => r.type === "CREATE"),
+      "REVIEW": recommendations.filter(r => r.type === "REVIEW"),
+      "IMPORTANT": recommendations.filter(r => r.type === "IMPORTANT")
+    };
+    
+    // Show REMOVE recommendations first (clear unused indexes)
+    if (byType.REMOVE.length > 0) {
+      print("🗑️  UNUSED INDEXES TO REMOVE:");
+      byType.REMOVE.forEach((rec, i) => {
+        print(`${i+1}. ${rec.collection} - ${rec.index}`);
+        print(`   Reason: ${rec.reason}`);
+        print(`   Command: ${rec.command}`);
+        print("");
+      });
+    }
+    
+    // Show CREATE recommendations
+    if (byType.CREATE.length > 0) {
+      print("\n➕ COLLECTIONS NEEDING INDEXES:");
+      byType.CREATE.forEach((rec, i) => {
+        print(`${i+1}. ${rec.collection}`);
+        print(`   Reason: ${rec.reason}`);
+        print(`   Action: ${rec.suggestion}`);
+        print("");
+      });
+    }
+    
+    // Show other recommendations
+    if (byType.REVIEW.length > 0) {
+      print("\n🔍 INDEXES TO REVIEW:");
+      byType.REVIEW.forEach((rec, i) => {
+        print(`${i+1}. ${rec.collection} - ${rec.index}`);
+        print(`   Reason: ${rec.reason}`);
+        print(`   Suggestion: ${rec.suggestion}`);
+        print("");
+      });
+    }
+    
+    if (byType.IMPORTANT.length > 0) {
+      print("\n⭐ IMPORTANT INDEXES (Heavily Used):");
+      byType.IMPORTANT.forEach((rec, i) => {
+        print(`${i+1}. ${rec.collection} - ${rec.index}`);
+        print(`   Usage: ${rec.reason}`);
+        print(`   Note: ${rec.suggestion}`);
+        print("");
+      });
+    }
+    
+  } else {
+    print("\n✅ No specific index recommendations at this time.");
+  }
+  
+  return recommendations;
+}
+
+getIndexRecommendations();
+🚀 Quick Diagnostic Script
+javascript
+// Run this for a quick assessment
+function quickIndexDiagnostic() {
+  print("🔍 Quick Index Diagnostic");
+  print("=".repeat(50));
+  
+  // 1. Check current operations for COLLSCAN
+  const currentOps = db.currentOp({ "active": true });
+  let collScans = 0;
+  
+  currentOps.inProgress.forEach(op => {
+    if (op.planSummary && op.planSummary.includes("COLLSCAN")) {
+      collScans++;
+      print(`⚠️  Active COLLSCAN on: ${op.ns} (${op.secs_running}s)`);
+    }
+  });
+  
+  // 2. Check collections with no indexes
+  const noIndexCollections = [];
+  db.getCollectionNames().forEach(collName => {
+    if (!collName.includes('system.')) {
+      const indexes = db[collName].getIndexes();
+      if (indexes.length <= 1) { // Only _id index
+        const count = db[collName].count();
+        if (count > 100) {
+          noIndexCollections.push({ name: collName, count: count });
+        }
+      }
+    }
+  });
+  
+  // 3. Report findings
+  if (collScans > 0) {
+    print(`\n🚨 Found ${collScans} active collection scans`);
+  } else {
+    print(`\n✅ No active collection scans found`);
+  }
+  
+  if (noIndexCollections.length > 0) {
+    print(`\n⚠️  Collections with only _id index (may need custom indexes):`);
+    noIndexCollections.forEach(coll => {
+      print(`   ${coll.name}: ${coll.count.toLocaleString()} documents`);
+    });
+  } else {
+    print(`\n✅ All non-system collections have custom indexes`);
+  }
+  
+  // 4. Recommendations
+  print("\n💡 Quick Recommendations:");
+  if (collScans > 0 || noIndexCollections.length > 0) {
+    print("1. Run comprehensiveIndexHealthCheck() for detailed analysis");
+    print("2. Enable profiling: db.setProfilingLevel(1, 100)");
+    print("3. Analyze slow queries after 24 hours");
+  } else {
+    print("Database appears well-indexed. Monitor with query profiling.");
+  }
+}
+
+quickIndexDiagnostic();
+📋 Action Plan for Index Optimization
+1.	Immediate Actions:
+o	Run quickIndexDiagnostic() for a quick assessment
+o	Kill any long-running COLLSCAN operations found in db.currentOp()
+o	Enable profiling with db.setProfilingLevel(1, 100)
+2.	Short-term Analysis:
+o	Run comprehensiveIndexHealthCheck() to identify problem areas
+o	Remove unused indexes identified in the report
+o	Monitor for 24 hours with profiling enabled
+3.	Long-term Strategy:
+o	Run analyzeQueryPatterns(7) to understand weekly patterns
+o	Implement suggested indexes from query analysis
+o	Set up regular index health checks (weekly/monthly)
+Most Important: Focus first on collections showing COLLSCAN in db.currentOp() or those with high document counts and no indexes. These will give you the biggest performance improvements.
+Next Step: Run quickIndexDiagnostic() and share the output. I can help you prioritize which collections to focus on first and suggest specific indexes based on your query patterns.
+
+
+https://www.mongodb.com/docs/manual/administration/connection-pool-overview/
+
+
+
+From your screenshots, mongod is the top memory consumer (~42%), CPU is relatively low, and you have 4 vCPU / 16 GB RAM. On MongoDB 7.x (WiredTiger), performance is mostly about:
+•	avoiding swap
+•	right-sizing WiredTiger cache
+•	disk I/O + indexes + query shapes
+•	OS tuning (THP, ulimits, swappiness)
+Below is a practical tuning checklist for RHEL 8 + MongoDB 7.0.28 on a 16 GB box.
+________________________________________
+1) Stop swap from killing latency (highest impact)
+If MongoDB (or the OS) starts swapping, latency spikes and throughput collapses.
+Check current swap + memory pressure
+free -h
+swapon --show
+vmstat 1 5
+Set swappiness low (prefer RAM over swap)
+sudo sysctl -w vm.swappiness=1
+echo 'vm.swappiness=1' | sudo tee /etc/sysctl.d/99-mongo.conf
+sudo sysctl -p /etc/sysctl.d/99-mongo.conf
+If swap is already used heavily
+Swap doesn’t automatically “go back to 0”. If you have enough free RAM, you can clear it safely:
+sudo swapoff -a
+sudo swapon -a
+(Do this in a controlled window; ensure RAM headroom first.)
+________________________________________
+2) Disable Transparent Huge Pages (THP)
+THP frequently causes latency/jitter for database workloads.
+Check THP
+cat /sys/kernel/mm/transparent_hugepage/enabled
+cat /sys/kernel/mm/transparent_hugepage/defrag
+Disable (runtime)
+echo never | sudo tee /sys/kernel/mm/transparent_hugepage/enabled
+echo never | sudo tee /sys/kernel/mm/transparent_hugepage/defrag
+Make persistent (systemd unit override)
+sudo systemctl edit mongod
+Add:
+[Service]
+ExecStartPre=/bin/sh -c 'echo never > /sys/kernel/mm/transparent_hugepage/enabled'
+ExecStartPre=/bin/sh -c 'echo never > /sys/kernel/mm/transparent_hugepage/defrag'
+Then:
+sudo systemctl daemon-reload
+sudo systemctl restart mongod
+________________________________________
+3) Right-size WiredTiger cache for 16 GB RAM
+Default WiredTiger cache is roughly 50% of RAM minus 1 GB, which can be OK, but if you run other services or see swapping, you want to cap it.
+Good starting point for 16 GB box
+If MongoDB is the main service: 6–8 GB cache is usually safe.
+If other apps exist: 4–6 GB.
+Edit /etc/mongod.conf:
+storage:
+  wiredTiger:
+    engineConfig:
+      cacheSizeGB: 6
+Apply:
+sudo systemctl restart mongod
+Verify cache + eviction pressure
+In mongosh:
+db.serverStatus().wiredTiger.cache
+If you see lots of eviction activity and dirty pages building up, you may be I/O bound or cache too small—or queries are scanning too much.
+________________________________________
+4) Fix the real performance issue: slow queries / missing indexes
+With 4 vCPU, MongoDB can still perform well if queries use indexes and avoid large scans/sorts.
+Turn on profiling for slow ops (temporarily)
+db.setProfilingLevel(1, { slowms: 100 })
+Find worst queries
+db.system.profile.find().sort({ millis: -1 }).limit(20)
+Also check current ops
+db.currentOp({ "active": true, "secs_running": { $gte: 2 } })
+Use explain() on a slow query
+db.collection.find({ ... }).explain("executionStats")
+What you want: IXSCAN, low totalDocsExamined, low nReturned/totalDocsExamined ratio close to 1.
+Red flags: COLLSCAN, SORT stage without index, huge docsExamined.
+Quick index sanity checks
+•	Index fields used in:
+o	filters (find / $match)
+o	sorts (sort)
+o	joins ($lookup foreignField)
+•	Avoid regex that can’t use indexes (/^prefix/ is OK, /middle/ not).
+________________________________________
+5) Check disk I/O and filesystem (often the bottleneck)
+MongoDB performance is frequently limited by storage latency/IOPS.
+Check if you’re I/O bound
+iostat -x 1 10
+If you see high %util or high await, disk is limiting.
+Recommended basics
+•	Use XFS (common best practice on RHEL for MongoDB)
+•	Ensure storage is SSD or good IOPS
+•	Ensure there is free disk space (keep ~20% free)
+________________________________________
+6) Raise OS limits (avoid connection/file bottlenecks)
+Check limits for mongod process
+pid=$(pidof mongod); cat /proc/$pid/limits
+Recommended:
+•	nofile (open files): >= 64000
+•	nproc (processes/threads): higher than default
+Example /etc/security/limits.d/99-mongodb.conf:
+mongod soft nofile 64000
+mongod hard nofile 64000
+mongod soft nproc 64000
+mongod hard nproc 64000
+(If using mongodb user, set for that user.)
+Then restart and re-check.
+________________________________________
+7) Connection & workload hygiene (4 vCPU matters)
+If you have many concurrent clients, you can get context switching and queueing.
+•	Ensure application uses connection pooling (don’t open/close per request)
+•	Avoid huge aggregation pipelines without indexes
+•	Keep document sizes reasonable; avoid unbounded array growth
+•	Use bulk writes instead of many single inserts where possible
+________________________________________
+8) What I’d set as a “safe baseline” for your box
+For 4 vCPU / 16 GB with MongoDB as primary service:
+•	wiredTiger cacheSizeGB: 6 (start here)
+•	vm.swappiness=1
+•	THP disabled
+•	nofile=64000+
+•	SSD-backed storage (or at least verify low await)
+•	Index work driven by slow query profiling
+________________________________________
+Tell me 3 quick outputs and I’ll pinpoint the bottleneck
+Run and paste outputs (no secrets):
+1.	
+free -h; swapon --show
+2.	
+iostat -x 1 5
+3.	In mongosh:
+db.serverStatus().wiredTiger.cache
+With those, I can tell you if your problem is swap, disk I/O, cache eviction, or query/indexing—and exactly what to change.
+•	Eviction is happening (eviction worker active, walks, pages selected/evicted).
+•	You have a lot of pages that WT “does not want to evict” (~2,897,709) → this is usually pinned / internal / recently-used / hazard-pointer protected pages, and it reduces how effectively WT can free cache.
+•	“pages read into cache” ~ 47,400 is not huge by itself, but…
+•	You also show “history store” activity and many messages about eviction / history store handling.
+•	In your earlier dashboard screenshots, swap usage was non-trivial. If swap is in play, MongoDB will feel slow even if CPU looks fine.
+This pattern usually maps to one (or more) of these root causes:
+A) Cache too large for the host (OS starts swapping)
+Even if WT is “within its cache”, the OS still needs RAM for filesystem cache, page tables, other processes, etc. On 16 GB, the default WT cache can be too aggressive depending on what else runs.
+B) Queries doing scans / sorts (cache churn)
+Eviction pressure rises when queries touch lots of data that doesn’t fit (COLLSCAN, non-indexed sort, large aggregations).
+C) History store pressure (long running transactions / too many updates)
+If sessions stay open, or there are long-running reads/transactions, WiredTiger can’t drop older versions easily, so internal work increases.
+________________________________________
+What to change first (safe + high impact)
+1) Cap WiredTiger cache to 6 GB (for 16 GB host)
+This is the most reliable first move on your box.
+Edit /etc/mongod.conf:
+storage:
+  wiredTiger:
+    engineConfig:
+      cacheSizeGB: 6
+Restart:
+sudo systemctl restart mongod
+Why: leaves RAM for OS + filesystem cache and reduces swap risk. With 4 vCPU/16 GB, this is a good baseline.
+________________________________________
+2) Ensure the OS does NOT swap MongoDB
+Set:
+sudo sysctl -w vm.swappiness=1
+echo 'vm.swappiness=1' | sudo tee /etc/sysctl.d/99-mongo.conf
+sudo sysctl -p /etc/sysctl.d/99-mongo.conf
+If swap is already high and you have headroom:
+free -h
+sudo swapoff -a && sudo swapon -a
+________________________________________
+3) Disable THP (Transparent Huge Pages)
+cat /sys/kernel/mm/transparent_hugepage/enabled
+If it’s not never, disable (runtime):
+echo never | sudo tee /sys/kernel/mm/transparent_hugepage/enabled
+echo never | sudo tee /sys/kernel/mm/transparent_hugepage/defrag
+________________________________________
+Next: confirm whether it’s “query/index” or “storage/IO”
+Your cache output alone can’t prove which one; we need 2 quick checks.
+A) Check disk latency (MongoDB may be I/O bound)
+iostat -x 1 5
+If await is high or %util stays high, storage is limiting.
+B) Check top slow queries (most common cause)
+Temporarily enable profiling (100ms):
+db.setProfilingLevel(1, { slowms: 100 })
+Then:
+db.system.profile.find().sort({ millis: -1 }).limit(20)
+If you paste 2–3 worst entries (query + millis + planSummary), I’ll tell you exactly which indexes to add and how to rewrite.
+________________________________________
+Two specific things I want you to verify from this WT cache output
+In mongosh, run these (copy/paste output):
+1) Are we constantly “full”?
+var c=db.serverStatus().wiredTiger.cache;
+print("maxBytes:", c["maximum bytes configured for cache"]);
+print("bytesInCache:", c["bytes currently in the cache"]);
+print("dirtyBytes:", c["tracked dirty bytes in the cache"]);
+2) Eviction effectiveness
+print("evictApp:", c["pages evicted by application threads"]);
+print("evictWorker:", c["pages evicted by eviction worker threads"]);
+print("evictSlow:", c["eviction server slept because we did not make progress with eviction"]);
+If bytesInCache stays near maxBytes and evictSlow climbs, you’re under sustained eviction pressure.
+________________________________________
+Bottom line for your setup (4 vCPU / 16 GB)
+1.	Set WT cache to 6 GB
+2.	Disable swap pressure (swappiness=1, avoid swapping mongod)
+3.	Disable THP
+4.	Then fix indexes based on slow queries
+Paste these outputs and I’ll give you a precise tuning plan:
+•	free -h; swapon --show
+•	iostat -x 1 5
+•	The 3 lines from the “maxBytes/bytesInCache/dirtyBytes” snippet above
+•	Top 3 slow queries from db.system.profile
+
