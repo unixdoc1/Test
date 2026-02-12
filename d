@@ -1,15 +1,18 @@
-// === Schema + Data Types for ALL collections (Robo 3T safe) ===
-// Prints: Collection name, then each field and the set of BSON types seen.
-// NOTE: MongoDB is schemaless; this is inferred from sampled documents.
+// ===============================
+// CONFIGURATION
+// ===============================
+var SAMPLE_SIZE = 20000;   // set to 0 to scan entire collection (not recommended)
 
-var SAMPLE_SIZE = 20000; // change to 0 to scan entire collection (not recommended)
-
+// ===============================
+// START
+// ===============================
 var collections = db.getCollectionNames();
 
 for (var i = 0; i < collections.length; i++) {
+
     var collName = collections[i];
 
-    // skip system collections
+    // Skip system collections
     if (collName.indexOf("system.") === 0) {
         continue;
     }
@@ -18,9 +21,38 @@ for (var i = 0; i < collections.length; i++) {
     print("Collection: " + collName);
     print("==================================================");
 
+    // ===============================
+    // 1️⃣ PRINT INDEX INFORMATION
+    // ===============================
+    print("\n--- Indexes ---");
+
+    try {
+        var indexes = db.getCollection(collName).getIndexes();
+
+        for (var j = 0; j < indexes.length; j++) {
+            var idx = indexes[j];
+
+            print("Index Name: " + idx.name);
+            print("  Keys: " + tojson(idx.key));
+
+            if (idx.unique) print("  Unique: true");
+            if (idx.sparse) print("  Sparse: true");
+            if (idx.expireAfterSeconds) print("  TTL: " + idx.expireAfterSeconds + " seconds");
+            if (idx.partialFilterExpression) print("  Partial Index: " + tojson(idx.partialFilterExpression));
+
+            print("-----------------------------------");
+        }
+    } catch (e) {
+        print("Error retrieving indexes: " + e);
+    }
+
+    // ===============================
+    // 2️⃣ PRINT SCHEMA (FIELDS + TYPES)
+    // ===============================
+    print("\n--- Schema (Top-Level Fields) ---");
+
     var pipeline = [];
 
-    // Sample docs to reduce load (recommended). If SAMPLE_SIZE=0, skip sampling.
     if (SAMPLE_SIZE && SAMPLE_SIZE > 0) {
         pipeline.push({ $sample: { size: SAMPLE_SIZE } });
     }
@@ -45,7 +77,6 @@ for (var i = 0; i < collections.length; i++) {
             print("Field: " + r._id + " | Types: " + r.types.join(", "));
         }
     } catch (e) {
-        print("ERROR processing collection: " + collName);
-        print(e);
+        print("Error analyzing schema: " + e);
     }
 }
